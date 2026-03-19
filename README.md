@@ -131,6 +131,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 - Αν το broad search δεν βρει candidates, το script κάνει fallback σε `deep exact check` για να πιάσει leftovers τύπου `service gone / sys gone / oemXX.inf still present`.
 - Αν ένα exact runtime service query πέσει πάνω σε broken/protected system entry, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence αντί να πετάξει raw PowerShell error με line number.
 - Αν δεν υπάρχει πια exact live evidence αλλά το `setupapi.dev.log` δείχνει linked components από το ίδιο install window, το script τα εμφανίζει ως follow-up hints και ΟΧΙ ως auto-delete targets.
+- Αν ένα linked token μοιάζει με protected Windows/core service, το script το σημαδεύει ως `PROTECTED / review-only`, το εξαιρεί από linked cleanup scope και δεν θα το περάσει ποτέ σε destructive removal.
 - Αν υπάρχουν linked components με current exact live evidence, το script ρωτά πλέον αν θέλεις cleanup μόνο για τον primary driver, για όλο το linked set, ή για επιλεγμένα linked components.
 - Αν μετά το cleanup μείνουν `Remaining linked targets`, μπορείς να συνεχίσεις από το ίδιο run και να καθαρίσεις όλα ή επιλεγμένα leftovers χωρίς να ξαναξεκινήσεις το script από την αρχή.
 
@@ -367,6 +368,13 @@ drivercheck/
 <summary><b>Γιατί δεν γίνεται broad full Get-Service enumeration;</b></summary>
 
 Σε μερικά corporate ή partially-cleaned systems, ένα full `Get-Service` scan μπορεί να πετάξει raw errors για broken ή protected services και να μοιάζει με script failure. Το broad discovery βασίζεται πλέον κυρίως στο **service registry inventory**, ενώ τα exact runtime checks συνεχίζουν να γίνονται με safe handling και καθαρό warning όταν το λειτουργικό επιστρέφει προβληματική service κατάσταση.
+
+</details>
+
+<details>
+<summary><b>Πώς προστατεύονται Windows/core services όπως το WUDFWpdFs;</b></summary>
+
+Το script κάνει πλέον ξεχωριστό protection pass πριν από οποιοδήποτε cleanup. Αν ένα target ή linked component μοιάζει με **known Windows service token**, **Microsoft-owned Windows binary** ή **Microsoft-provided driver package**, επισημαίνεται ως `review-only` και μπλοκάρεται από destructive cleanup ώστε system services να μην μπουν κατά λάθος στο ίδιο scope με third-party leftovers.
 
 </details>
 

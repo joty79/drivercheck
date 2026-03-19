@@ -286,3 +286,14 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. If a runtime service query returns a system-level error, suppress the raw PowerShell error and replace it with a concise warning that the investigation continued with other evidence sources.
 *   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation; code review of candidate-discovery and exact-service evidence paths after degraded-query hardening
+
+*   **Date:** 2026-03-19
+*   **Problem:** Linked `SetupAPI` evidence could surface real Windows/core services such as `WUDFWpdFs`, and without an explicit protection layer they could look like valid cleanup candidates next to third-party leftovers.
+*   **Root Cause:** Linked-component review and cleanup-scope logic treated every live exact token with equal weight and did not distinguish Microsoft/core service evidence from third-party driver residue.
+*   **Guardrail:**
+    1. Known Windows/core service tokens must stay review-only.
+    2. Microsoft-owned Windows binaries and Microsoft-provided driver packages should block destructive cleanup for that target.
+    3. Linked service-only evidence without package/file/`PnP` proof should not become automatic linked cleanup scope.
+    4. Keep a final destructive-action guard inside the removal function even if earlier UI filtering already skipped the protected target.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; code review of protected-target tagging, linked-scope filtering, and final cleanup block path

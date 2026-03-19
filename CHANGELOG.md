@@ -6,6 +6,8 @@
 
 ### Changed
 
+- Το `driver_check.ps1` προστατεύει πλέον linked και exact Windows/core services από destructive cleanup: known tokens όπως `WUDFWpdFs`, Microsoft-owned Windows binaries και Microsoft-provided packages επισημαίνονται ως `review-only` και μπλοκάρονται από cleanup scope/removal.
+- Το linked cleanup flow του `driver_check.ps1` έγινε πιο συντηρητικό: service-only related tokens χωρίς package/file/`PnP` proof μένουν πλέον review-only αντί να προσφέρονται ως linked cleanup targets.
 - Το `driver_check.ps1` δεν βασίζεται πλέον σε broad full `Get-Service` enumeration για candidate discovery, ώστε broken/protected service entries να μη βγάζουν raw line-number errors που μοιάζουν με syntax/runtime failure.
 - Το exact runtime service check του `driver_check.ps1` έγινε πιο ανθεκτικό: αν ένα συγκεκριμένο service query επιστρέψει system-level error, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence.
 - Το `driver_check.ps1` έγινε πολύ πιο αξιόπιστο για already-removed installs με leftovers: αν το broad search δεν βρει candidates, κάνει πλέον `deep exact check` αντί να υποθέτει ότι δεν υπάρχει τίποτα.

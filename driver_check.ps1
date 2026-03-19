@@ -319,6 +319,165 @@ function Get-RuntimeServicesByNameSafe {
     }
 }
 
+function Get-ProtectedWindowsServiceTokens {
+    $protectedTokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($token in @(
+            'WUDFWpdFs',
+            'WUDFRd',
+            'WudfSvc',
+            'WudfPf',
+            'UMDFReflector'
+        )) {
+        [void]$protectedTokens.Add($token)
+    }
+
+    return $protectedTokens
+}
+
+function Resolve-ServiceImagePath {
+    param(
+        [AllowEmptyString()]
+        [string]$ImagePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ImagePath)) {
+        return ''
+    }
+
+    $candidatePath = $ImagePath.Trim()
+    $pathMatch = [regex]::Match($candidatePath, '(?i)(?<path>(?:%[^%]+%|\\SystemRoot|[A-Z]:|System32\\|\\System32\\)[^"]+?\.(sys|exe|dll))')
+    if ($pathMatch.Success) {
+        $candidatePath = $pathMatch.Groups['path'].Value
+    }
+    else {
+        $candidatePath = ($candidatePath -split '\s+')[0].Trim('"')
+    }
+
+    $candidatePath = [Environment]::ExpandEnvironmentVariables($candidatePath)
+    if ($candidatePath -match '^(?i)\\SystemRoot\\') {
+        $candidatePath = Join-Path $env:windir ($candidatePath.Substring('\SystemRoot\'.Length))
+    }
+    elseif ($candidatePath -match '^(?i)System32\\') {
+        $candidatePath = Join-Path $env:windir $candidatePath
+    }
+    elseif ($candidatePath -match '^(?i)\\System32\\') {
+        $candidatePath = Join-Path $env:windir ($candidatePath.TrimStart('\'))
+    }
+
+    return $candidatePath.Trim('"')
+}
+
+function Test-PathUnderWindowsRoot {
+    param(
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path))
+        $windowsRoot = [System.IO.Path]::GetFullPath($env:windir)
+        return $fullPath.StartsWith($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-FileCompanyNameSafe {
+    param(
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return ''
+    }
+
+    try {
+        return [string](Get-Item -LiteralPath $Path -ErrorAction Stop).VersionInfo.CompanyName
+    }
+    catch {
+        return ''
+    }
+}
+
+function Get-ProtectionInfoForEvidence {
+    param(
+        [string]$ExactDriver,
+        [object[]]$DriverPackages,
+        [object[]]$RegistryKeys,
+        [AllowEmptyString()]
+        [string]$SystemFilePath,
+        [bool]$SystemFileExists,
+        [object[]]$AdditionalFiles
+    )
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    $protectedTokens = Get-ProtectedWindowsServiceTokens
+
+    if ($protectedTokens.Contains($ExactDriver)) {
+        [void]$reasons.Add("Known protected Windows service token: $ExactDriver")
+    }
+
+    foreach ($package in @($DriverPackages)) {
+        if (Test-ContainsInsensitive -Value $package.ProviderName -Needle 'Microsoft') {
+            [void]$reasons.Add("Microsoft driver package provider: $($package.PublishedName) / $($package.OriginalName)")
+        }
+    }
+
+    $candidatePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($SystemFileExists -and -not [string]::IsNullOrWhiteSpace($SystemFilePath)) {
+        [void]$candidatePaths.Add($SystemFilePath)
+    }
+
+    foreach ($registryKey in @($RegistryKeys)) {
+        $resolvedImagePath = Resolve-ServiceImagePath -ImagePath $registryKey.ImagePath
+        if (-not [string]::IsNullOrWhiteSpace($resolvedImagePath)) {
+            [void]$candidatePaths.Add($resolvedImagePath)
+        }
+    }
+
+    foreach ($file in @($AdditionalFiles)) {
+        if ($null -ne $file -and -not [string]::IsNullOrWhiteSpace([string]$file.FullName)) {
+            [void]$candidatePaths.Add([string]$file.FullName)
+        }
+    }
+
+    foreach ($candidatePath in @($candidatePaths)) {
+        if (-not (Test-PathUnderWindowsRoot -Path $candidatePath)) {
+            continue
+        }
+
+        $companyName = Get-FileCompanyNameSafe -Path $candidatePath
+        if (Test-ContainsInsensitive -Value $companyName -Needle 'Microsoft') {
+            [void]$reasons.Add("Microsoft-owned Windows binary: $candidatePath")
+        }
+    }
+
+    return [pscustomobject]@{
+        IsProtected = ($reasons.Count -gt 0)
+        Reasons = @($reasons | Sort-Object -Unique)
+    }
+}
+
+function Test-ActionableCleanupEvidence {
+    param(
+        [object]$Evidence
+    )
+
+    return (
+        $Evidence.DriverPackages.Count -gt 0 -or
+        $Evidence.PnpDevices.Count -gt 0 -or
+        $Evidence.SystemFileExists -or
+        $Evidence.AdditionalFiles.Count -gt 0 -or
+        $Evidence.DriverQueryLines.Count -gt 0
+    )
+}
+
 function Add-CandidateToken {
     param(
         [System.Collections.Generic.HashSet[string]]$Set,
@@ -661,11 +820,23 @@ function Get-RelatedComponentHints {
     }
 
     $results = foreach ($entry in $relatedMap.Values) {
+        $relatedRegistryKeys = @($ServiceRegistry | Where-Object {
+                $_.NameToken -ieq $entry.Token -or
+                $_.ImageToken -ieq $entry.Token -or
+                $_.Name -in $entry.Services
+            })
+        $relatedPackages = @($AllPackages | Where-Object {
+                $_.OriginalToken -ieq $entry.Token
+            })
+        $protectionInfo = Get-ProtectionInfoForEvidence -ExactDriver $entry.Token -DriverPackages $relatedPackages -RegistryKeys $relatedRegistryKeys -SystemFilePath '' -SystemFileExists $false -AdditionalFiles @()
+
         [pscustomobject]@{
             Token = $entry.Token
             Packages = @($entry.Packages | Sort-Object -Unique)
             Services = @($entry.Services | Sort-Object -Unique)
             Reasons = @($entry.Reasons | Sort-Object -Unique)
+            IsProtected = $protectionInfo.IsProtected
+            ProtectionReasons = @($protectionInfo.Reasons | Sort-Object -Unique)
         }
     }
 
@@ -752,6 +923,7 @@ function Get-DriverEvidence {
     if (-not $SkipRelatedComponents) {
         $relatedComponents = @(Get-RelatedComponentHints -ExactDriver $ExactDriver -MatchedPackages $matchedPackages -MatchedRegistryKeys $matchedServiceKeys -AllPackages $DriverPackages -ServiceRegistry $ServiceRegistry)
     }
+    $protectionInfo = Get-ProtectionInfoForEvidence -ExactDriver $ExactDriver -DriverPackages $matchedPackages -RegistryKeys $matchedServiceKeys -SystemFilePath $sysPath -SystemFileExists $systemFileExists -AdditionalFiles $additionalFiles
 
     [pscustomobject]@{
         ExactDriver = $ExactDriver
@@ -765,6 +937,7 @@ function Get-DriverEvidence {
         PnpDevices = @($matchedPnpDevices | Sort-Object InstanceId)
         AdditionalFiles = @($additionalFiles | Sort-Object FullName)
         RelatedComponents = @($relatedComponents | Sort-Object Token)
+        ProtectionInfo = $protectionInfo
     }
 }
 
@@ -860,12 +1033,22 @@ function Show-DriverEvidence {
         Write-Host "`n$I_Info 7. Linked Related Components (SetupAPI Evidence)" -ForegroundColor Cyan
         Write-Host "$I_Warn Τα παρακάτω ΔΕΝ είναι hardcoded guesses. Βρέθηκαν linked επειδή εμφανίζονται στο ίδιο SetupAPI install window με το current driver evidence." -ForegroundColor Yellow
         foreach ($relatedItem in $Evidence.RelatedComponents) {
-            Write-Host "$I_Item $($relatedItem.Token)" -ForegroundColor Yellow
+            $relatedColor = 'Yellow'
+            $relatedLabel = "$I_Item $($relatedItem.Token)"
+            if ($relatedItem.IsProtected) {
+                $relatedColor = 'DarkYellow'
+                $relatedLabel += ' [PROTECTED / review-only]'
+            }
+
+            Write-Host $relatedLabel -ForegroundColor $relatedColor
             foreach ($packageLine in (Get-RelatedPackageDisplayLines -PackageTexts $relatedItem.Packages)) {
                 Write-Host "    Package: $($packageLine.DisplayText)" -ForegroundColor DarkYellow
             }
             foreach ($serviceText in $relatedItem.Services) {
                 Write-Host "    Service: $serviceText" -ForegroundColor DarkYellow
+            }
+            foreach ($protectionReason in $relatedItem.ProtectionReasons) {
+                Write-Host "    Protect: $protectionReason" -ForegroundColor DarkCyan
             }
             foreach ($reasonText in $relatedItem.Reasons) {
                 Write-Host "    Link   : $reasonText" -ForegroundColor DarkGray
@@ -913,6 +1096,9 @@ function Show-RelatedFollowUpGuidance {
         return
     }
 
+    $actionableRelatedTokens = @($Evidence.RelatedComponents | Where-Object { -not $_.IsProtected } | ForEach-Object { $_.Token } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $protectedRelatedTokens = @($Evidence.RelatedComponents | Where-Object { $_.IsProtected } | ForEach-Object { $_.Token } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+
     Write-Host ''
     if ($PostCleanup) {
         Write-Host "$I_Warn Το exact evidence για τον driver `"$($Evidence.ExactDriver)`" καθαρίστηκε, αλλά βρέθηκαν LINKED related components από το ίδιο SetupAPI install window." -ForegroundColor Yellow
@@ -922,9 +1108,18 @@ function Show-RelatedFollowUpGuidance {
     }
 
     Write-Host 'Αυτά ΔΕΝ διαγράφονται αυτόματα από αυτή την exact-driver εκτέλεση. Έλεγξέ τα ξεχωριστά μόνο αν τα αναγνωρίζεις ως μέρος του ίδιου install stack.' -ForegroundColor DarkYellow
-    Write-Host 'Προτεινόμενα επόμενα checks:' -ForegroundColor Cyan
-    foreach ($relatedToken in $relatedTokens) {
-        Write-Host "  - $relatedToken" -ForegroundColor Yellow
+    if ($actionableRelatedTokens.Count -gt 0) {
+        Write-Host 'Προτεινόμενα επόμενα checks:' -ForegroundColor Cyan
+        foreach ($relatedToken in $actionableRelatedTokens) {
+            Write-Host "  - $relatedToken" -ForegroundColor Yellow
+        }
+    }
+
+    if ($protectedRelatedTokens.Count -gt 0) {
+        Write-Host 'Παραλείφθηκαν protected Windows/core services από τα actionable follow-up targets:' -ForegroundColor DarkCyan
+        foreach ($relatedToken in $protectedRelatedTokens) {
+            Write-Host "  - $relatedToken" -ForegroundColor DarkYellow
+        }
     }
 }
 
@@ -942,10 +1137,21 @@ function Get-RelatedCleanupCandidates {
         }
 
         $relatedEvidence = Get-DriverEvidence -ExactDriver $relatedToken -ServiceRegistry $ServiceRegistry -DriverPackages $DriverPackages -SkipRelatedComponents
+        $isProtected = ($relatedItem.IsProtected -or $relatedEvidence.ProtectionInfo.IsProtected)
+        $protectionReasons = @(
+            @($relatedItem.ProtectionReasons) +
+            @($relatedEvidence.ProtectionInfo.Reasons)
+        ) | Sort-Object -Unique
+        $hasLiveEvidence = (Test-EvidenceFound -Evidence $relatedEvidence)
+        $hasActionableEvidence = (Test-ActionableCleanupEvidence -Evidence $relatedEvidence)
         [pscustomobject]@{
             Token = $relatedToken
             Evidence = $relatedEvidence
-            HasLiveEvidence = (Test-EvidenceFound -Evidence $relatedEvidence)
+            HasLiveEvidence = $hasLiveEvidence
+            HasActionableEvidence = $hasActionableEvidence
+            IsProtected = $isProtected
+            ProtectionReasons = @($protectionReasons)
+            CanOfferCleanup = ($hasLiveEvidence -and $hasActionableEvidence -and -not $isProtected)
             HintPackages = @(Get-RelatedPackageDisplayLines -PackageTexts $relatedItem.Packages)
             HintServices = @($relatedItem.Services | Sort-Object -Unique)
         }
@@ -998,7 +1204,26 @@ function Resolve-CleanupTargets {
     }
 
     $relatedCandidates = @(Get-RelatedCleanupCandidates -Evidence $PrimaryEvidence -ServiceRegistry $ServiceRegistry -DriverPackages $DriverPackages)
-    $liveRelatedCandidates = @($relatedCandidates | Where-Object { $_.HasLiveEvidence })
+    $protectedRelatedCandidates = @($relatedCandidates | Where-Object { $_.HasLiveEvidence -and $_.IsProtected })
+    $nonActionableRelatedCandidates = @($relatedCandidates | Where-Object { $_.HasLiveEvidence -and -not $_.IsProtected -and -not $_.HasActionableEvidence })
+    $liveRelatedCandidates = @($relatedCandidates | Where-Object { $_.CanOfferCleanup })
+
+    if ($protectedRelatedCandidates.Count -gt 0) {
+        Write-Host "`n$I_Warn Παραλείφθηκαν protected Windows/core services από το linked cleanup scope." -ForegroundColor Yellow
+        foreach ($candidate in $protectedRelatedCandidates) {
+            Write-Host "  - $($candidate.Token)" -ForegroundColor DarkYellow
+            foreach ($protectionReason in $candidate.ProtectionReasons) {
+                Write-Host "      Protect: $protectionReason" -ForegroundColor DarkCyan
+            }
+        }
+    }
+
+    if ($nonActionableRelatedCandidates.Count -gt 0) {
+        Write-Host "`n$I_Warn Κάποια linked targets έμειναν review-only επειδή έχουν μόνο service/registry-style evidence χωρίς package/file/PnP proof." -ForegroundColor Yellow
+        foreach ($candidate in $nonActionableRelatedCandidates) {
+            Write-Host "  - $($candidate.Token) :: $(Get-EvidenceSummaryText -Evidence $candidate.Evidence)" -ForegroundColor DarkYellow
+        }
+    }
 
     if ($liveRelatedCandidates.Count -eq 0) {
         return @($targets)
@@ -1201,6 +1426,15 @@ function Remove-DriverEvidence {
         [object]$Evidence
     )
 
+    if ($Evidence.ProtectionInfo.IsProtected) {
+        Write-Host "`n$I_Warn ΜΠΛΟΚΑΡΙΣΜΑ cleanup: το target `"$($Evidence.ExactDriver)`" μοιάζει με protected Windows/core component." -ForegroundColor Red
+        foreach ($protectionReason in $Evidence.ProtectionInfo.Reasons) {
+            Write-Host "    $protectionReason" -ForegroundColor DarkYellow
+        }
+        Write-Host 'Το script σταματά τη destructive ενέργεια για αυτό το target.' -ForegroundColor DarkYellow
+        return
+    }
+
     Write-Host "`n$I_Info Έναρξη Διαγραφής για: $($Evidence.ExactDriver)" -ForegroundColor Cyan
 
     if ($Evidence.PnpDevices.Count -gt 0) {
@@ -1365,6 +1599,16 @@ while ($true) {
             Write-Host 'Αν ξέρεις ότι το install/remove έχει ήδη γίνει, το αποτέλεσμα αυτό σημαίνει συνήθως ότι δεν έχει μείνει κάτι από service, package, device ή monitored Windows file paths.' -ForegroundColor DarkGreen
         }
 
+        Wait-ActionOrRestart
+        continue
+    }
+
+    if ($evidence.ProtectionInfo.IsProtected) {
+        Write-Host "`n$I_Warn Το target `"$exactDriver`" αναγνωρίστηκε ως protected Windows/core component." -ForegroundColor Red
+        foreach ($protectionReason in $evidence.ProtectionInfo.Reasons) {
+            Write-Host "    $protectionReason" -ForegroundColor DarkYellow
+        }
+        Write-Host 'Θα παραμείνει review-only και το script δεν θα επιτρέψει cleanup για αυτό το target.' -ForegroundColor DarkYellow
         Wait-ActionOrRestart
         continue
     }
