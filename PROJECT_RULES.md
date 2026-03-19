@@ -276,3 +276,13 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     2. Keep only scripts/docs tracked; treat captured investigation data as local runtime output unless explicitly curated for sharing.
 *   **Files affected:** `.gitignore`, `CHANGELOG.md`
 *   **Validation/tests run:** Git status review before push showed the unwanted untracked folders
+
+*   **Date:** 2026-03-19
+*   **Problem:** A broken or protected service entry could leak a raw `Get-Service` error with line numbers during broad candidate discovery, which looked like a script syntax/runtime failure even though the tool should continue investigating leftovers.
+*   **Root Cause:** Broad search still depended on full runtime service enumeration, and the user-facing path did not normalize service-query failures into a concise degraded-mode message.
+*   **Guardrail:**
+    1. Do not depend on broad full `Get-Service` enumeration for candidate discovery on live systems.
+    2. Prefer service-registry inventory for broad discovery and use exact runtime service queries only as focused evidence checks.
+    3. If a runtime service query returns a system-level error, suppress the raw PowerShell error and replace it with a concise warning that the investigation continued with other evidence sources.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; code review of candidate-discovery and exact-service evidence paths after degraded-query hardening

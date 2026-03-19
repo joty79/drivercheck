@@ -76,7 +76,6 @@ Search term
    |
    v
 Candidate discovery
-   |-- Get-Service
    |-- HKLM:\SYSTEM\CurrentControlSet\Services
    |-- C:\Windows\System32\drivers\*.sys
    |-- pnputil /enum-drivers
@@ -130,6 +129,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 - Κενό input στο prompt τερματίζει το πρόγραμμα.
 - Μετά από κάθε run, `ENTER` ξεκινά νέα αναζήτηση και `ESC` κλείνει το παράθυρο.
 - Αν το broad search δεν βρει candidates, το script κάνει fallback σε `deep exact check` για να πιάσει leftovers τύπου `service gone / sys gone / oemXX.inf still present`.
+- Αν ένα exact runtime service query πέσει πάνω σε broken/protected system entry, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence αντί να πετάξει raw PowerShell error με line number.
 - Αν δεν υπάρχει πια exact live evidence αλλά το `setupapi.dev.log` δείχνει linked components από το ίδιο install window, το script τα εμφανίζει ως follow-up hints και ΟΧΙ ως auto-delete targets.
 - Αν υπάρχουν linked components με current exact live evidence, το script ρωτά πλέον αν θέλεις cleanup μόνο για τον primary driver, για όλο το linked set, ή για επιλεγμένα linked components.
 - Αν μετά το cleanup μείνουν `Remaining linked targets`, μπορείς να συνεχίσεις από το ίδιο run και να καθαρίσεις όλα ή επιλεγμένα leftovers χωρίς να ξαναξεκινήσεις το script από την αρχή.
@@ -142,7 +142,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 
 | Source | Method | Purpose |
 |--------|--------|---------|
-| Runtime service | `Get-Service` | Βλέπει αν υπάρχει active/installed service με exact name. |
+| Runtime service | `Get-Service -Name <exact>` | Βλέπει αν υπάρχει active/installed service με exact name, αλλά πλέον εμφανίζει safe warning αν το system service query είναι degraded. |
 | Service registry | `HKLM:\SYSTEM\CurrentControlSet\Services` | Πιάνει orphan service keys και `ImagePath` leftovers ακόμα κι όταν το `Get-Service` δεν δείχνει κάτι χρήσιμο. |
 | Driver file | `C:\Windows\System32\drivers\<name>.sys` | Επιβεβαιώνει αν υπάρχει το φυσικό `.sys` αρχείο. |
 | Loaded driver list | `driverquery /v` | Δείχνει αν το module φαίνεται φορτωμένο στα Windows. |
@@ -360,6 +360,13 @@ drivercheck/
 <summary><b>Γιατί ελέγχονται πολλές πηγές αντί για μία μόνο εντολή;</b></summary>
 
 Ένας driver μπορεί να αφήσει ίχνη σε διαφορετικά layers του συστήματος. Ο συνδυασμός **service check**, **physical file check**, **driverquery** και **Driver Store scan** δίνει πιο καθαρή εικόνα από οποιαδήποτε μεμονωμένη εντολή.
+
+</details>
+
+<details>
+<summary><b>Γιατί δεν γίνεται broad full Get-Service enumeration;</b></summary>
+
+Σε μερικά corporate ή partially-cleaned systems, ένα full `Get-Service` scan μπορεί να πετάξει raw errors για broken ή protected services και να μοιάζει με script failure. Το broad discovery βασίζεται πλέον κυρίως στο **service registry inventory**, ενώ τα exact runtime checks συνεχίζουν να γίνονται με safe handling και καθαρό warning όταν το λειτουργικό επιστρέφει προβληματική service κατάσταση.
 
 </details>
 

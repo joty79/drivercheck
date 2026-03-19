@@ -6,6 +6,8 @@
 
 ### Changed
 
+- Το `driver_check.ps1` δεν βασίζεται πλέον σε broad full `Get-Service` enumeration για candidate discovery, ώστε broken/protected service entries να μη βγάζουν raw line-number errors που μοιάζουν με syntax/runtime failure.
+- Το exact runtime service check του `driver_check.ps1` έγινε πιο ανθεκτικό: αν ένα συγκεκριμένο service query επιστρέψει system-level error, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence.
 - Το `driver_check.ps1` έγινε πολύ πιο αξιόπιστο για already-removed installs με leftovers: αν το broad search δεν βρει candidates, κάνει πλέον `deep exact check` αντί να υποθέτει ότι δεν υπάρχει τίποτα.
 - Το legacy current-state cleanup του `driver_check.ps1` ελέγχει πλέον περισσότερες πηγές live evidence: exact service keys στο registry, robust `pnputil` package parsing, `PnP` device evidence, extra Windows file evidence, και post-cleanup recheck.
 - Προστέθηκε το `DriverCheckWorkbench.ps1` ως menu-driven shell για snapshots, compare και cleanup από ένα σημείο, με explicit timing guidance για `BeforeInstall`, `AfterInstall` και `AfterCleanup`.

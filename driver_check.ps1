@@ -164,6 +164,41 @@ function Convert-ToDriverToken {
     return $trimmed
 }
 
+function Get-FriendlyErrorMessage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $message = ''
+    if ($null -ne $ErrorRecord.Exception -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.Exception.Message)) {
+        $message = [string]$ErrorRecord.Exception.Message
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$ErrorRecord)) {
+        $message = [string]$ErrorRecord
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        return 'Unknown error.'
+    }
+
+    return (($message -split '\r?\n')[0]).Trim()
+}
+
+function Test-ServiceNotFoundError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $message = Get-FriendlyErrorMessage -ErrorRecord $ErrorRecord
+    return (
+        (Test-ContainsInsensitive -Value $message -Needle 'Cannot find any service with service name') -or
+        (Test-ContainsInsensitive -Value $message -Needle 'No service found') -or
+        (Test-ContainsInsensitive -Value $message -Needle 'Cannot find any service with name')
+    )
+}
+
 function Test-ContainsInsensitive {
     param(
         [AllowEmptyString()]
@@ -247,6 +282,41 @@ function Get-ServiceRegistryInventory {
     }
 
     return @($services | Sort-Object Name)
+}
+
+function Get-RuntimeServicesByNameSafe {
+    param(
+        [string[]]$ServiceNames
+    )
+
+    $services = New-Object System.Collections.Generic.List[object]
+    $warnings = New-Object System.Collections.Generic.List[string]
+
+    foreach ($serviceName in @($ServiceNames) | Sort-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($serviceName)) {
+            continue
+        }
+
+        try {
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($null -ne $service) {
+                $services.Add($service)
+            }
+        }
+        catch {
+            if (Test-ServiceNotFoundError -ErrorRecord $_) {
+                continue
+            }
+
+            $friendlyMessage = Get-FriendlyErrorMessage -ErrorRecord $_
+            $warnings.Add("Runtime service query for [$serviceName] failed: $friendlyMessage")
+        }
+    }
+
+    return [pscustomobject]@{
+        Services = @($services.ToArray() | Sort-Object Name)
+        Warnings = @($warnings.ToArray() | Sort-Object -Unique)
+    }
 }
 
 function Add-CandidateToken {
@@ -613,15 +683,6 @@ function Find-DriverCandidates {
     $sysPathBase = Join-Path $env:SystemRoot 'System32\drivers'
     $infPathBase = Join-Path $env:SystemRoot 'INF'
 
-    foreach ($service in @(Get-Service -ErrorAction SilentlyContinue)) {
-        if (
-            (Test-ContainsInsensitive -Value $service.Name -Needle $SearchTerm) -or
-            (Test-ContainsInsensitive -Value $service.DisplayName -Needle $SearchTerm)
-        ) {
-            Add-CandidateToken -Set $candidateSet -Value $service.Name
-        }
-    }
-
     foreach ($entry in $ServiceRegistry) {
         if (
             (Test-ContainsInsensitive -Value $entry.Name -Needle $SearchTerm) -or
@@ -675,12 +736,9 @@ function Get-DriverEvidence {
         }
     }
 
-    $runtimeServices = foreach ($serviceName in @($serviceNames) | Sort-Object) {
-        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-        if ($null -ne $service) {
-            $service
-        }
-    }
+    $runtimeServiceResult = Get-RuntimeServicesByNameSafe -ServiceNames @($serviceNames)
+    $runtimeServices = @($runtimeServiceResult.Services)
+    $runtimeServiceWarnings = @($runtimeServiceResult.Warnings)
 
     $sysPath = Join-Path $env:SystemRoot "System32\drivers\$ExactDriver.sys"
     $systemFileExists = Test-Path -LiteralPath $sysPath
@@ -698,6 +756,7 @@ function Get-DriverEvidence {
     [pscustomobject]@{
         ExactDriver = $ExactDriver
         RuntimeServices = @($runtimeServices | Sort-Object Name)
+        RuntimeServiceWarnings = @($runtimeServiceWarnings | Sort-Object -Unique)
         RegistryKeys = @($matchedServiceKeys | Sort-Object Name)
         SystemFilePath = $sysPath
         SystemFileExists = $systemFileExists
@@ -736,6 +795,14 @@ function Show-DriverEvidence {
             if (-not [string]::IsNullOrWhiteSpace($registryKey.ImagePath)) {
                 Write-Host "    ImagePath  : $($registryKey.ImagePath)" -ForegroundColor DarkYellow
             }
+        }
+    }
+
+    if ($Evidence.RuntimeServiceWarnings.Count -gt 0) {
+        Write-Host "$I_Warn Το runtime service query του συστήματος επέστρεψε προβληματική εγγραφή ή protected-service error." -ForegroundColor Yellow
+        Write-Host 'Η αναζήτηση συνεχίστηκε κανονικά με service registry, packages, files και PnP evidence.' -ForegroundColor DarkYellow
+        foreach ($warningText in $Evidence.RuntimeServiceWarnings) {
+            Write-Host "    $warningText" -ForegroundColor DarkGray
         }
     }
 
