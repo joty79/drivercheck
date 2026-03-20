@@ -6,6 +6,7 @@
 
 ### Changed
 
+- Το post-cleanup continuation flow του `driver_check.ps1` δεν προτείνει πλέον protected/review-only linked leftovers ως cleanup επιλογές. Τέτοια targets εμφανίζονται μόνο ως informational review-only note και εξαιρούνται από το `Remaining linked targets` menu.
 - Το option `[2]` στο linked cleanup scope menu του `driver_check.ps1` δείχνει πλέον και warning icon ώστε το `AIO cleanup` path να ξεχωρίζει αμέσως ως πιο επιθετική επιλογή.
 - Το linked cleanup scope menu του `driver_check.ps1` έγινε πιο ξεκάθαρο σε dark terminals: το `[2]` δηλώνει πλέον ρητά `AIO cleanup` για primary + όλα τα linked targets, ενώ το `[3]` δείχνει καθαρά ότι είναι selective επιλογή.
 - Τα protected-detail colors του `driver_check.ps1` έγιναν πιο ευανάγνωστα σε dark background: οι `Protect` γραμμές φωτίστηκαν και τα `Metadata` hints έγιναν yellow για να ξεχωρίζουν εύκολα από τα υπόλοιπα status lines.

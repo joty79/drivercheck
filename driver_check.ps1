@@ -1408,6 +1408,30 @@ function Show-RemainingLinkedTargetsSummary {
     }
 }
 
+function Show-ReviewOnlyRemainingLinkedTargetsSummary {
+    param(
+        [object[]]$ReviewOnlyCandidates
+    )
+
+    if ($null -eq $ReviewOnlyCandidates -or $ReviewOnlyCandidates.Count -eq 0) {
+        return
+    }
+
+    Write-Host ''
+    Write-Host "$I_Warn Υπάρχουν linked components με current live evidence που παραμένουν review-only και ΕΞΑΙΡΟΥΝΤΑΙ από το continuation cleanup." -ForegroundColor Red
+    Write-Host 'Δεν θα εμφανιστούν ως cleanup επιλογές σε αυτό το στάδιο. Έλεγξέ τα μόνο χειροκίνητα αν υπάρχει συγκεκριμένος λόγος.' -ForegroundColor DarkYellow
+    foreach ($candidate in $ReviewOnlyCandidates) {
+        $candidateColor = if ($candidate.IsProtected) { 'Red' } else { 'Yellow' }
+        Write-Host "  - $($candidate.Token) :: $(Get-EvidenceSummaryText -Evidence $candidate.Evidence)" -ForegroundColor $candidateColor
+        foreach ($protectionReason in $candidate.ProtectionReasons) {
+            Write-Host "      Protect : $protectionReason" -ForegroundColor Red
+        }
+        foreach ($metadataHint in $candidate.ProtectionMetadataHints) {
+            Write-Host "      Metadata: $metadataHint" -ForegroundColor Yellow
+        }
+    }
+}
+
 function Resolve-RemainingCleanupTargets {
     param(
         [object[]]$RemainingCandidates
@@ -1715,16 +1739,21 @@ while ($true) {
                 }
             }
 
-            $remainingLinkedCandidates = @(
+            $remainingRelatedCandidates = @(
                 Get-RelatedCleanupCandidates -Evidence $evidence -ServiceRegistry $postServiceRegistry -DriverPackages $postDriverPackages |
                 Where-Object {
                     $_.HasLiveEvidence -and $_.Token -notin $allCleanupTargetTokens
                 }
             )
+            $remainingLinkedCandidates = @($remainingRelatedCandidates | Where-Object { $_.CanOfferCleanup })
+            $remainingReviewOnlyCandidates = @($remainingRelatedCandidates | Where-Object { -not $_.CanOfferCleanup })
 
             if ($remainingEvidenceFound) {
                 if ($remainingLinkedCandidates.Count -gt 0) {
                     Show-RemainingLinkedTargetsSummary -RemainingCandidates $remainingLinkedCandidates
+                }
+                if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                    Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
                 }
                 break
             }
@@ -1732,6 +1761,9 @@ while ($true) {
             if ($remainingLinkedCandidates.Count -gt 0) {
                 Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence για τα cleanup targets." -ForegroundColor Green
                 Show-RemainingLinkedTargetsSummary -RemainingCandidates $remainingLinkedCandidates
+                if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                    Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                }
 
                 $continuationTargets = @(Resolve-RemainingCleanupTargets -RemainingCandidates $remainingLinkedCandidates)
                 if ($continuationTargets.Count -eq 0) {
@@ -1748,6 +1780,12 @@ while ($true) {
                     @($pendingCleanupTargets | ForEach-Object { $_.ExactDriver } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                 ) | Sort-Object -Unique
                 continue
+            }
+
+            if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο cleanup-eligible live evidence μετά το cleanup." -ForegroundColor Green
+                Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                break
             }
 
             Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence μετά το cleanup." -ForegroundColor Green

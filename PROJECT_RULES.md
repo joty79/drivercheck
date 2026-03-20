@@ -317,3 +317,13 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. Prefer bright readable warning colors over darker shades for protected-detail output on dark backgrounds.
 *   **Files affected:** `driver_check.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation after color/menu text update; static review against the latest dark-background transcript
+
+*   **Date:** 2026-03-20
+*   **Problem:** Even after protected-target blocking, the post-cleanup continuation menu could still offer a protected Windows/core linked target such as `WUDFWpdFs` as if it were cleanup-eligible.
+*   **Root Cause:** The `Remaining linked targets` branch filtered only by `HasLiveEvidence` and ignored `CanOfferCleanup` / `IsProtected`, so review-only targets leaked into the continuation menu.
+*   **Guardrail:**
+    1. Post-cleanup continuation menus must offer only cleanup-eligible linked targets.
+    2. Protected or otherwise review-only linked leftovers may still be shown as informational notes, but never as continuation cleanup choices.
+    3. If only review-only linked leftovers remain, the run should end with an informational review-only summary instead of a cleanup prompt.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation planned after remaining-linked continuation filter fix; user transcript showed the protected-target leak

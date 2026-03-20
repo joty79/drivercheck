@@ -134,6 +134,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 - Αν ένα linked token μοιάζει με protected Windows/core service, το script το σημαδεύει ως `PROTECTED / review-only`, το εξαιρεί από linked cleanup scope και δεν θα το περάσει ποτέ σε destructive removal.
 - Για protected/system targets, το script δείχνει πλέον και file metadata hints όπως `Description`, `Product`, `Original filename` και πιο έντονο red color path ώστε να ξεχωρίζουν αμέσως από normal removable leftovers.
 - Αν υπάρχουν linked components με current exact live evidence, το script ρωτά πλέον αν θέλεις cleanup μόνο για τον primary driver, για όλο το linked set, ή για επιλεγμένα linked components.
+- Μετά το cleanup, protected ή αλλιώς review-only linked leftovers μπορεί να εμφανιστούν μόνο ως informational note και όχι ως continuation cleanup επιλογές.
 - Αν μετά το cleanup μείνουν `Remaining linked targets`, μπορείς να συνεχίσεις από το ίδιο run και να καθαρίσεις όλα ή επιλεγμένα leftovers χωρίς να ξαναξεκινήσεις το script από την αρχή.
 
 | Parameter     | Type     | Default | Description                                                                   |
