@@ -2,10 +2,20 @@
 
 Όλες οι notable αλλαγές του project καταγράφονται εδώ.
 
+## 2026-03-20
+
+### Changed
+
+- Το option `[2]` στο linked cleanup scope menu του `driver_check.ps1` δείχνει πλέον και warning icon ώστε το `AIO cleanup` path να ξεχωρίζει αμέσως ως πιο επιθετική επιλογή.
+- Το linked cleanup scope menu του `driver_check.ps1` έγινε πιο ξεκάθαρο σε dark terminals: το `[2]` δηλώνει πλέον ρητά `AIO cleanup` για primary + όλα τα linked targets, ενώ το `[3]` δείχνει καθαρά ότι είναι selective επιλογή.
+- Τα protected-detail colors του `driver_check.ps1` έγιναν πιο ευανάγνωστα σε dark background: οι `Protect` γραμμές φωτίστηκαν και τα `Metadata` hints έγιναν yellow για να ξεχωρίζουν εύκολα από τα υπόλοιπα status lines.
+
 ## 2026-03-19
 
 ### Changed
 
+- Το protected-target detection του `driver_check.ps1` χρησιμοποιεί πλέον και file version metadata (`Description`, `Product`, `OriginalFilename`, Microsoft copyright hints) για πιο ανθρώπινη αναγνώριση system drivers όπως `WUDFWpdFs` / `WUDFRd`.
+- Το protected/system UI path του `driver_check.ps1` έγινε πιο έντονο οπτικά: οι protected linked/system targets εμφανίζονται πλέον με πιο ξεκάθαρο red path και metadata hints αντί να μοιάζουν με απλό yellow caution output.
 - Το `driver_check.ps1` προστατεύει πλέον linked και exact Windows/core services από destructive cleanup: known tokens όπως `WUDFWpdFs`, Microsoft-owned Windows binaries και Microsoft-provided packages επισημαίνονται ως `review-only` και μπλοκάρονται από cleanup scope/removal.
 - Το linked cleanup flow του `driver_check.ps1` έγινε πιο συντηρητικό: service-only related tokens χωρίς package/file/`PnP` proof μένουν πλέον review-only αντί να προσφέρονται ως linked cleanup targets.
 - Το `driver_check.ps1` δεν βασίζεται πλέον σε broad full `Get-Service` enumeration για candidate discovery, ώστε broken/protected service entries να μη βγάζουν raw line-number errors που μοιάζουν με syntax/runtime failure.

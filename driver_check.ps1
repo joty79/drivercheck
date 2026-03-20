@@ -387,21 +387,46 @@ function Test-PathUnderWindowsRoot {
     }
 }
 
-function Get-FileCompanyNameSafe {
+function Get-FileVersionMetadataSafe {
     param(
         [AllowEmptyString()]
         [string]$Path
     )
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
-        return ''
+        return [pscustomobject]@{
+            CompanyName = ''
+            ProductName = ''
+            FileDescription = ''
+            OriginalFilename = ''
+            LegalCopyright = ''
+            FileVersion = ''
+            ProductVersion = ''
+        }
     }
 
     try {
-        return [string](Get-Item -LiteralPath $Path -ErrorAction Stop).VersionInfo.CompanyName
+        $versionInfo = (Get-Item -LiteralPath $Path -ErrorAction Stop).VersionInfo
+        return [pscustomobject]@{
+            CompanyName = [string]$versionInfo.CompanyName
+            ProductName = [string]$versionInfo.ProductName
+            FileDescription = [string]$versionInfo.FileDescription
+            OriginalFilename = [string]$versionInfo.OriginalFilename
+            LegalCopyright = [string]$versionInfo.LegalCopyright
+            FileVersion = [string]$versionInfo.FileVersion
+            ProductVersion = [string]$versionInfo.ProductVersion
+        }
     }
     catch {
-        return ''
+        return [pscustomobject]@{
+            CompanyName = ''
+            ProductName = ''
+            FileDescription = ''
+            OriginalFilename = ''
+            LegalCopyright = ''
+            FileVersion = ''
+            ProductVersion = ''
+        }
     }
 }
 
@@ -417,6 +442,7 @@ function Get-ProtectionInfoForEvidence {
     )
 
     $reasons = New-Object System.Collections.Generic.List[string]
+    $metadataHints = New-Object System.Collections.Generic.List[string]
     $protectedTokens = Get-ProtectedWindowsServiceTokens
 
     if ($protectedTokens.Contains($ExactDriver)) {
@@ -452,15 +478,41 @@ function Get-ProtectionInfoForEvidence {
             continue
         }
 
-        $companyName = Get-FileCompanyNameSafe -Path $candidatePath
-        if (Test-ContainsInsensitive -Value $companyName -Needle 'Microsoft') {
+        $fileMetadata = Get-FileVersionMetadataSafe -Path $candidatePath
+        $looksMicrosoftOwned = $false
+
+        if (Test-ContainsInsensitive -Value $fileMetadata.CompanyName -Needle 'Microsoft') {
             [void]$reasons.Add("Microsoft-owned Windows binary: $candidatePath")
+            $looksMicrosoftOwned = $true
+        }
+        elseif (
+            (Test-ContainsInsensitive -Value $fileMetadata.ProductName -Needle 'Windows') -or
+            (Test-ContainsInsensitive -Value $fileMetadata.LegalCopyright -Needle 'Microsoft')
+        ) {
+            [void]$reasons.Add("Windows OS metadata suggests protected system binary: $candidatePath")
+            $looksMicrosoftOwned = $true
+        }
+
+        if ($looksMicrosoftOwned) {
+            if (-not [string]::IsNullOrWhiteSpace($fileMetadata.FileDescription)) {
+                [void]$metadataHints.Add("Description: $($fileMetadata.FileDescription)")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($fileMetadata.ProductName)) {
+                [void]$metadataHints.Add("Product: $($fileMetadata.ProductName)")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($fileMetadata.OriginalFilename)) {
+                [void]$metadataHints.Add("Original filename: $($fileMetadata.OriginalFilename)")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($fileMetadata.LegalCopyright) -and (Test-ContainsInsensitive -Value $fileMetadata.LegalCopyright -Needle 'Microsoft')) {
+                [void]$metadataHints.Add('Copyright: Microsoft Corporation')
+            }
         }
     }
 
     return [pscustomobject]@{
         IsProtected = ($reasons.Count -gt 0)
         Reasons = @($reasons | Sort-Object -Unique)
+        MetadataHints = @($metadataHints | Sort-Object -Unique)
     }
 }
 
@@ -837,6 +889,7 @@ function Get-RelatedComponentHints {
             Reasons = @($entry.Reasons | Sort-Object -Unique)
             IsProtected = $protectionInfo.IsProtected
             ProtectionReasons = @($protectionInfo.Reasons | Sort-Object -Unique)
+            ProtectionMetadataHints = @($protectionInfo.MetadataHints | Sort-Object -Unique)
         }
     }
 
@@ -1036,8 +1089,8 @@ function Show-DriverEvidence {
             $relatedColor = 'Yellow'
             $relatedLabel = "$I_Item $($relatedItem.Token)"
             if ($relatedItem.IsProtected) {
-                $relatedColor = 'DarkYellow'
-                $relatedLabel += ' [PROTECTED / review-only]'
+                $relatedColor = 'Red'
+                $relatedLabel += ' [PROTECTED SYSTEM / review-only]'
             }
 
             Write-Host $relatedLabel -ForegroundColor $relatedColor
@@ -1048,7 +1101,10 @@ function Show-DriverEvidence {
                 Write-Host "    Service: $serviceText" -ForegroundColor DarkYellow
             }
             foreach ($protectionReason in $relatedItem.ProtectionReasons) {
-                Write-Host "    Protect: $protectionReason" -ForegroundColor DarkCyan
+                Write-Host "    Protect : $protectionReason" -ForegroundColor Red
+            }
+            foreach ($metadataHint in $relatedItem.ProtectionMetadataHints) {
+                Write-Host "    Metadata: $metadataHint" -ForegroundColor Yellow
             }
             foreach ($reasonText in $relatedItem.Reasons) {
                 Write-Host "    Link   : $reasonText" -ForegroundColor DarkGray
@@ -1151,6 +1207,7 @@ function Get-RelatedCleanupCandidates {
             HasActionableEvidence = $hasActionableEvidence
             IsProtected = $isProtected
             ProtectionReasons = @($protectionReasons)
+            ProtectionMetadataHints = @($relatedEvidence.ProtectionInfo.MetadataHints | Sort-Object -Unique)
             CanOfferCleanup = ($hasLiveEvidence -and $hasActionableEvidence -and -not $isProtected)
             HintPackages = @(Get-RelatedPackageDisplayLines -PackageTexts $relatedItem.Packages)
             HintServices = @($relatedItem.Services | Sort-Object -Unique)
@@ -1209,11 +1266,14 @@ function Resolve-CleanupTargets {
     $liveRelatedCandidates = @($relatedCandidates | Where-Object { $_.CanOfferCleanup })
 
     if ($protectedRelatedCandidates.Count -gt 0) {
-        Write-Host "`n$I_Warn Παραλείφθηκαν protected Windows/core services από το linked cleanup scope." -ForegroundColor Yellow
+        Write-Host "`n$I_Warn Παραλείφθηκαν protected Windows/core services από το linked cleanup scope." -ForegroundColor Red
         foreach ($candidate in $protectedRelatedCandidates) {
-            Write-Host "  - $($candidate.Token)" -ForegroundColor DarkYellow
+            Write-Host "  - $($candidate.Token)" -ForegroundColor Red
             foreach ($protectionReason in $candidate.ProtectionReasons) {
-                Write-Host "      Protect: $protectionReason" -ForegroundColor DarkCyan
+                Write-Host "      Protect : $protectionReason" -ForegroundColor Red
+            }
+            foreach ($metadataHint in $candidate.ProtectionMetadataHints) {
+                Write-Host "      Metadata: $metadataHint" -ForegroundColor Yellow
             }
         }
     }
@@ -1239,8 +1299,8 @@ function Resolve-CleanupTargets {
 
     Write-Host ''
     Write-Host '  [1] Exact driver only' -ForegroundColor Green
-    Write-Host '  [2] Exact + all linked live evidence' -ForegroundColor Yellow
-    Write-Host '  [3] Exact + select linked components' -ForegroundColor Magenta
+    Write-Host "  [2] AIO cleanup: exact + ALL linked targets above $I_Warn CAUTION IT will remove everything at once" -ForegroundColor Yellow
+    Write-Host '  [3] Selective cleanup: exact + choose linked targets you want to remove' -ForegroundColor Cyan
     Write-Host '  [0] Cancel' -ForegroundColor Red
 
     $scopeChoice = Read-HostTrimmed -Prompt "`n$I_Input Διάλεξε cleanup scope (0-3)"
@@ -1254,7 +1314,7 @@ function Resolve-CleanupTargets {
         }
         '3' {
             Write-Host ''
-            Write-Host 'Select linked components:' -ForegroundColor Cyan
+            Write-Host 'Select linked components to include:' -ForegroundColor Cyan
             for ($index = 0; $index -lt $liveRelatedCandidates.Count; $index++) {
                 $candidate = $liveRelatedCandidates[$index]
                 Write-Host "  [$($index + 1)] $($candidate.Token) :: $(Get-EvidenceSummaryText -Evidence $candidate.Evidence)" -ForegroundColor Yellow
@@ -1429,7 +1489,10 @@ function Remove-DriverEvidence {
     if ($Evidence.ProtectionInfo.IsProtected) {
         Write-Host "`n$I_Warn ΜΠΛΟΚΑΡΙΣΜΑ cleanup: το target `"$($Evidence.ExactDriver)`" μοιάζει με protected Windows/core component." -ForegroundColor Red
         foreach ($protectionReason in $Evidence.ProtectionInfo.Reasons) {
-            Write-Host "    $protectionReason" -ForegroundColor DarkYellow
+            Write-Host "    Protect : $protectionReason" -ForegroundColor Red
+        }
+        foreach ($metadataHint in $Evidence.ProtectionInfo.MetadataHints) {
+            Write-Host "    Metadata: $metadataHint" -ForegroundColor Yellow
         }
         Write-Host 'Το script σταματά τη destructive ενέργεια για αυτό το target.' -ForegroundColor DarkYellow
         return
@@ -1606,7 +1669,10 @@ while ($true) {
     if ($evidence.ProtectionInfo.IsProtected) {
         Write-Host "`n$I_Warn Το target `"$exactDriver`" αναγνωρίστηκε ως protected Windows/core component." -ForegroundColor Red
         foreach ($protectionReason in $evidence.ProtectionInfo.Reasons) {
-            Write-Host "    $protectionReason" -ForegroundColor DarkYellow
+            Write-Host "    Protect : $protectionReason" -ForegroundColor Red
+        }
+        foreach ($metadataHint in $evidence.ProtectionInfo.MetadataHints) {
+            Write-Host "    Metadata: $metadataHint" -ForegroundColor Yellow
         }
         Write-Host 'Θα παραμείνει review-only και το script δεν θα επιτρέψει cleanup για αυτό το target.' -ForegroundColor DarkYellow
         Wait-ActionOrRestart

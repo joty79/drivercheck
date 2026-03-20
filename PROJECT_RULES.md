@@ -297,3 +297,23 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     4. Keep a final destructive-action guard inside the removal function even if earlier UI filtering already skipped the protected target.
 *   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation; code review of protected-target tagging, linked-scope filtering, and final cleanup block path
+
+*   **Date:** 2026-03-20
+*   **Problem:** Even after the protection guard, protected Windows/core services were still harder to recognize quickly in the UI and the explanation relied too much on abstract protection reasons instead of human-friendly file metadata.
+*   **Root Cause:** The protection output focused on rule matches (`protected token`, `Microsoft-owned binary`) but did not surface enough familiar file properties like `Description`, `Product`, and `Original filename`, and the color path was still too close to ordinary caution output.
+*   **Guardrail:**
+    1. For protected Windows/core targets, show recognizable file metadata when available.
+    2. Use a stronger visual path for protected/system targets than for ordinary yellow caution output.
+    3. Prefer UI clues that help the operator immediately recognize a built-in Windows component before any cleanup decision.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation after metadata-hint and protected-color update; static review against the `WUDFWpdFs` screenshot evidence
+
+*   **Date:** 2026-03-20
+*   **Problem:** The linked cleanup scope menu still did not make the `clean all linked` versus `choose linked` decision obvious enough, and some protected-detail colors remained too dim on black terminal backgrounds.
+*   **Root Cause:** The menu labels were technically correct but not explicit about `all` versus `select`, and `DarkRed`/neutral metadata colors reduced scan speed in dark themes.
+*   **Guardrail:**
+    1. In destructive scope menus, label the `all linked` branch explicitly as `AIO` / `ALL linked`.
+    2. Label the selective branch explicitly as a choose/include action.
+    3. Prefer bright readable warning colors over darker shades for protected-detail output on dark backgrounds.
+*   **Files affected:** `driver_check.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation after color/menu text update; static review against the latest dark-background transcript

@@ -132,6 +132,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 - Αν ένα exact runtime service query πέσει πάνω σε broken/protected system entry, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence αντί να πετάξει raw PowerShell error με line number.
 - Αν δεν υπάρχει πια exact live evidence αλλά το `setupapi.dev.log` δείχνει linked components από το ίδιο install window, το script τα εμφανίζει ως follow-up hints και ΟΧΙ ως auto-delete targets.
 - Αν ένα linked token μοιάζει με protected Windows/core service, το script το σημαδεύει ως `PROTECTED / review-only`, το εξαιρεί από linked cleanup scope και δεν θα το περάσει ποτέ σε destructive removal.
+- Για protected/system targets, το script δείχνει πλέον και file metadata hints όπως `Description`, `Product`, `Original filename` και πιο έντονο red color path ώστε να ξεχωρίζουν αμέσως από normal removable leftovers.
 - Αν υπάρχουν linked components με current exact live evidence, το script ρωτά πλέον αν θέλεις cleanup μόνο για τον primary driver, για όλο το linked set, ή για επιλεγμένα linked components.
 - Αν μετά το cleanup μείνουν `Remaining linked targets`, μπορείς να συνεχίσεις από το ίδιο run και να καθαρίσεις όλα ή επιλεγμένα leftovers χωρίς να ξαναξεκινήσεις το script από την αρχή.
 
@@ -374,7 +375,9 @@ drivercheck/
 <details>
 <summary><b>Πώς προστατεύονται Windows/core services όπως το WUDFWpdFs;</b></summary>
 
-Το script κάνει πλέον ξεχωριστό protection pass πριν από οποιοδήποτε cleanup. Αν ένα target ή linked component μοιάζει με **known Windows service token**, **Microsoft-owned Windows binary** ή **Microsoft-provided driver package**, επισημαίνεται ως `review-only` και μπλοκάρεται από destructive cleanup ώστε system services να μην μπουν κατά λάθος στο ίδιο scope με third-party leftovers.
+Το script κάνει πλέον ξεχωριστό protection pass πριν από οποιοδήποτε cleanup. Αν ένα target ή linked component μοιάζει με **known Windows service token**, **Microsoft-owned Windows binary**, **Windows OS file metadata** ή **Microsoft-provided driver package**, επισημαίνεται ως `review-only` και μπλοκάρεται από destructive cleanup ώστε system services να μην μπουν κατά λάθος στο ίδιο scope με third-party leftovers.
+
+Για να το αναγνωρίζεις πιο εύκολα, το UI δείχνει και metadata hints όπως `Description`, `Product` και `Original filename`, ενώ τα protected lines χρησιμοποιούν πιο έντονο κόκκινο χρώμα αντί για το συνηθισμένο yellow warning path.
 
 </details>
 
