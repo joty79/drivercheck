@@ -130,6 +130,9 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 - Μετά από κάθε run, `ENTER` ξεκινά νέα αναζήτηση και `ESC` κλείνει το παράθυρο.
 - Αν το broad search δεν βρει candidates, το script κάνει fallback σε `deep exact check` για να πιάσει leftovers τύπου `service gone / sys gone / oemXX.inf still present`.
 - Αν ένα exact runtime service query πέσει πάνω σε broken/protected system entry, το script δείχνει concise warning και συνεχίζει με registry/package/file/`PnP` evidence αντί να πετάξει raw PowerShell error με line number.
+- Το `PnP` evidence path δεν βασίζεται πλέον μόνο στο `Get-PnpDevice`: ενώνει και signed-driver metadata από `Win32_PnPSignedDriver`, ώστε να πιάνει καλύτερα cases όπου το χρήσιμο identifier φαίνεται ως `DeviceName`, `DriverName`, `InfName` ή `oemXX.inf`.
+- Μετά το initial `PnP` match, το script διαβάζει και `Get-PnpDeviceProperty` fields όπως `DriverInfPath`, `MatchingDeviceId`, `Service` και `DriverInfSection`, ώστε να μπορεί να δέσει καλύτερα το matched device με το σωστό `pnputil` package.
+- Αν ούτε τα current `PnP` properties εκθέτουν το package name, το script δεν θα προωθήσει broad `SetupAPI` guesses σε exact `Driver Store` cleanup scope. Το `SetupAPI` μένει review/help path και όχι automatic package evidence.
 - Αν δεν υπάρχει πια exact live evidence αλλά το `setupapi.dev.log` δείχνει linked components από το ίδιο install window, το script τα εμφανίζει ως follow-up hints και ΟΧΙ ως auto-delete targets.
 - Αν ένα linked token μοιάζει με protected Windows/core service, το script το σημαδεύει ως `PROTECTED / review-only`, το εξαιρεί από linked cleanup scope και δεν θα το περάσει ποτέ σε destructive removal.
 - Για protected/system targets, το script δείχνει πλέον και file metadata hints όπως `Description`, `Product`, `Original filename` και πιο έντονο red color path ώστε να ξεχωρίζουν αμέσως από normal removable leftovers.
@@ -150,7 +153,7 @@ pwsh -ExecutionPolicy Bypass -File .\driver_check.ps1 -DriverName MulttKey
 | Driver file | `C:\Windows\System32\drivers\<name>.sys` | Επιβεβαιώνει αν υπάρχει το φυσικό `.sys` αρχείο. |
 | Loaded driver list | `driverquery /v` | Δείχνει αν το module φαίνεται φορτωμένο στα Windows. |
 | Driver Store | `pnputil /enum-drivers` | Εντοπίζει σχετικά `oemXX.inf` entries για cleanup. |
-| PnP evidence | `Get-PnpDevice -PresentOnly:$false` | Πιάνει device leftovers / instance IDs για remove step. |
+| PnP evidence | `Get-PnpDevice -PresentOnly:$false` + `Win32_PnPSignedDriver` + `Get-PnpDeviceProperty` | Πιάνει device leftovers / instance IDs, signed-driver aliases (`DeviceName`, `InfName`, `DriverName`, `oemXX.inf`) και `DriverInfPath` / `MatchingDeviceId` correlation για πιο αξιόπιστο remove step. |
 | Additional Windows files | `System32\drivers`, `INF`, `DriverStore\FileRepository` | Δείχνει extra file evidence στα βασικά Windows paths. |
 | SetupAPI linkage hints | `C:\Windows\INF\setupapi.dev.log` | Αν το exact driver evidence έχει ήδη φύγει, βοηθά να φανεί ποια related components εμφανίστηκαν στο ίδιο install window. |
 

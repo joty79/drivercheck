@@ -213,6 +213,137 @@ function Test-ContainsInsensitive {
     return $Value.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 
+function Add-SearchTerm {
+    param(
+        [System.Collections.Generic.HashSet[string]]$Set,
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return
+    }
+
+    $trimmedValue = $Value.Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($trimmedValue)) {
+        return
+    }
+
+    [void]$Set.Add($trimmedValue)
+
+    $token = Convert-ToDriverToken -Value $trimmedValue
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        [void]$Set.Add($token)
+        [void]$Set.Add("$token.inf")
+    }
+}
+
+function Test-MatchesAnySearchTerm {
+    param(
+        [AllowEmptyString()]
+        [string]$Value,
+        [string[]]$SearchTerms
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $null -eq $SearchTerms -or $SearchTerms.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($searchTerm in $SearchTerms) {
+        if (Test-ContainsInsensitive -Value $Value -Needle $searchTerm) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Add-OrUpdatePnpEvidenceEntry {
+    param(
+        [hashtable]$Map,
+        [AllowEmptyString()]
+        [string]$InstanceId,
+        [AllowEmptyString()]
+        [string]$FriendlyName,
+        [AllowEmptyString()]
+        [string]$Class,
+        [AllowEmptyString()]
+        [string]$Present,
+        [AllowEmptyString()]
+        [string]$Status,
+        [AllowEmptyString()]
+        [string]$InfName,
+        [AllowEmptyString()]
+        [string]$DriverName,
+        [AllowEmptyString()]
+        [string]$Manufacturer,
+        [AllowEmptyString()]
+        [string]$DriverProviderName,
+        [AllowEmptyString()]
+        [string]$MatchingDeviceId,
+        [AllowEmptyString()]
+        [string]$ServiceName,
+        [AllowEmptyString()]
+        [string]$DriverInfSection,
+        [string]$Source
+    )
+
+    $key = if (-not [string]::IsNullOrWhiteSpace($InstanceId)) {
+        $InstanceId
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($FriendlyName)) {
+        "NAME::$FriendlyName"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($InfName)) {
+        "INF::$InfName"
+    }
+    else {
+        return
+    }
+
+    if (-not $Map.ContainsKey($key)) {
+        $Map[$key] = [pscustomobject]@{
+            FriendlyName = ''
+            InstanceId = ''
+            Class = ''
+            Present = ''
+            Status = ''
+            InfName = ''
+            DriverName = ''
+            Manufacturer = ''
+            DriverProviderName = ''
+            MatchingDeviceId = ''
+            ServiceName = ''
+            DriverInfSection = ''
+            Sources = [System.Collections.Generic.List[string]]::new()
+        }
+    }
+
+    $entry = $Map[$key]
+    foreach ($fieldUpdate in @(
+            @{ Name = 'FriendlyName'; Value = $FriendlyName },
+            @{ Name = 'InstanceId'; Value = $InstanceId },
+            @{ Name = 'Class'; Value = $Class },
+            @{ Name = 'Present'; Value = $Present },
+            @{ Name = 'Status'; Value = $Status },
+            @{ Name = 'InfName'; Value = $InfName },
+            @{ Name = 'DriverName'; Value = $DriverName },
+            @{ Name = 'Manufacturer'; Value = $Manufacturer },
+            @{ Name = 'DriverProviderName'; Value = $DriverProviderName },
+            @{ Name = 'MatchingDeviceId'; Value = $MatchingDeviceId },
+            @{ Name = 'ServiceName'; Value = $ServiceName },
+            @{ Name = 'DriverInfSection'; Value = $DriverInfSection }
+        )) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.($fieldUpdate.Name)) -and -not [string]::IsNullOrWhiteSpace([string]$fieldUpdate.Value)) {
+            $entry.($fieldUpdate.Name) = [string]$fieldUpdate.Value
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Source) -and -not $entry.Sources.Contains($Source)) {
+        [void]$entry.Sources.Add($Source)
+    }
+}
+
 function Convert-PnpUtilToDriverPackages {
     param(
         [string[]]$Lines
@@ -577,24 +708,222 @@ function Get-AdditionalEvidenceFiles {
 
 function Get-PnpEvidence {
     param(
-        [string]$ExactDriver
+        [string]$ExactDriver,
+        [object[]]$DriverPackages,
+        [object[]]$RegistryKeys
     )
 
-    $devices = Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue | Where-Object {
-        (Test-ContainsInsensitive -Value ([string]$_.FriendlyName) -Needle $ExactDriver) -or
-        (Test-ContainsInsensitive -Value ([string]$_.InstanceId) -Needle $ExactDriver) -or
-        (Test-ContainsInsensitive -Value ([string]$_.Class) -Needle $ExactDriver)
-    } | ForEach-Object {
-        [pscustomobject]@{
-            FriendlyName = $_.FriendlyName
-            InstanceId = $_.InstanceId
-            Class = $_.Class
-            Present = $_.Present
-            Status = $_.Status
+    $searchTerms = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    Add-SearchTerm -Set $searchTerms -Value $ExactDriver
+    Add-SearchTerm -Set $searchTerms -Value "$ExactDriver.inf"
+
+    foreach ($package in @($DriverPackages)) {
+        foreach ($packageTerm in @($package.PublishedName, $package.OriginalName, $package.OriginalToken)) {
+            Add-SearchTerm -Set $searchTerms -Value ([string]$packageTerm)
         }
     }
 
-    return @($devices | Sort-Object InstanceId)
+    foreach ($registryKey in @($RegistryKeys)) {
+        foreach ($registryTerm in @($registryKey.Name, $registryKey.DisplayName, $registryKey.ImagePath, $registryKey.ImageToken)) {
+            Add-SearchTerm -Set $searchTerms -Value ([string]$registryTerm)
+        }
+    }
+
+    $allSearchTerms = @($searchTerms | Sort-Object)
+    if ($allSearchTerms.Count -eq 0) {
+        return @()
+    }
+
+    $deviceMap = @{}
+
+    function Get-PnpPropertyValueSafe {
+        param(
+            [string]$InstanceId,
+            [string]$KeyName
+        )
+
+        if ([string]::IsNullOrWhiteSpace($InstanceId) -or [string]::IsNullOrWhiteSpace($KeyName)) {
+            return ''
+        }
+
+        try {
+            $property = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName $KeyName -ErrorAction Stop
+            if ($null -eq $property -or $null -eq $property.Data) {
+                return ''
+            }
+
+            if ($property.Data -is [System.Array]) {
+                return (@($property.Data) -join '; ')
+            }
+
+            return [string]$property.Data
+        }
+        catch {
+            return ''
+        }
+    }
+
+    foreach ($device in @(Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue)) {
+        $candidateValues = @(
+            [string]$device.FriendlyName,
+            [string]$device.Name,
+            [string]$device.InstanceId,
+            [string]$device.Class
+        )
+
+        $matchesSearch = $false
+        foreach ($candidateValue in $candidateValues) {
+            if (Test-MatchesAnySearchTerm -Value $candidateValue -SearchTerms $allSearchTerms) {
+                $matchesSearch = $true
+                break
+            }
+        }
+
+        if ($matchesSearch) {
+            $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$device.FriendlyName)) {
+                [string]$device.FriendlyName
+            }
+            else {
+                [string]$device.Name
+            }
+
+            Add-OrUpdatePnpEvidenceEntry -Map $deviceMap `
+                -InstanceId ([string]$device.InstanceId) `
+                -FriendlyName $displayName `
+                -Class ([string]$device.Class) `
+                -Present ([string]$device.Present) `
+                -Status ([string]$device.Status) `
+                -InfName '' `
+                -DriverName '' `
+                -Manufacturer '' `
+                -DriverProviderName '' `
+                -MatchingDeviceId '' `
+                -ServiceName '' `
+                -DriverInfSection '' `
+                -Source 'Get-PnpDevice'
+        }
+    }
+
+    foreach ($signedDriver in @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue)) {
+        $candidateValues = @(
+            [string]$signedDriver.DeviceName,
+            [string]$signedDriver.FriendlyName,
+            [string]$signedDriver.Description,
+            [string]$signedDriver.DeviceID,
+            [string]$signedDriver.InfName,
+            [string]$signedDriver.DriverName,
+            [string]$signedDriver.Manufacturer,
+            [string]$signedDriver.DriverProviderName
+        )
+
+        $matchesSearch = $false
+        foreach ($candidateValue in $candidateValues) {
+            if (Test-MatchesAnySearchTerm -Value $candidateValue -SearchTerms $allSearchTerms) {
+                $matchesSearch = $true
+                break
+            }
+        }
+
+        if ($matchesSearch) {
+            $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.DeviceName)) {
+                [string]$signedDriver.DeviceName
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.FriendlyName)) {
+                [string]$signedDriver.FriendlyName
+            }
+            else {
+                [string]$signedDriver.Description
+            }
+
+            Add-OrUpdatePnpEvidenceEntry -Map $deviceMap `
+                -InstanceId ([string]$signedDriver.DeviceID) `
+                -FriendlyName $displayName `
+                -Class ([string]$signedDriver.DeviceClass) `
+                -Present '' `
+                -Status ([string]$signedDriver.Status) `
+                -InfName ([string]$signedDriver.InfName) `
+                -DriverName ([string]$signedDriver.DriverName) `
+                -Manufacturer ([string]$signedDriver.Manufacturer) `
+                -DriverProviderName ([string]$signedDriver.DriverProviderName) `
+                -MatchingDeviceId '' `
+                -ServiceName '' `
+                -DriverInfSection '' `
+                -Source 'Win32_PnPSignedDriver'
+        }
+    }
+
+    foreach ($entry in @($deviceMap.Values)) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.InstanceId)) {
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$entry.InfName)) {
+            $entry.InfName = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverInfPath'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.MatchingDeviceId)) {
+            $entry.MatchingDeviceId = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_MatchingDeviceId'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.ServiceName)) {
+            $entry.ServiceName = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Service'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.DriverInfSection)) {
+            $entry.DriverInfSection = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverInfSection'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Manufacturer)) {
+            $entry.Manufacturer = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Manufacturer'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.DriverProviderName)) {
+            $entry.DriverProviderName = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverProvider'
+        }
+    }
+
+    return @($deviceMap.Values | Sort-Object InstanceId, FriendlyName)
+}
+
+function Get-MatchedDriverPackages {
+    param(
+        [string]$ExactDriver,
+        [object[]]$DriverPackages,
+        [object[]]$PnpDevices
+    )
+
+    $matchedPackages = New-Object System.Collections.Generic.List[object]
+    $seenPublishedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $packageTerms = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    Add-SearchTerm -Set $packageTerms -Value $ExactDriver
+    Add-SearchTerm -Set $packageTerms -Value "$ExactDriver.inf"
+
+    foreach ($device in @($PnpDevices)) {
+        foreach ($term in @(
+                $device.InfName,
+                $device.DriverName,
+                $device.MatchingDeviceId,
+                $device.ServiceName,
+                $device.DriverInfSection,
+                $device.FriendlyName,
+                $device.InstanceId
+            )) {
+            Add-SearchTerm -Set $packageTerms -Value ([string]$term)
+        }
+    }
+
+    foreach ($package in @($DriverPackages)) {
+        $matchesPackage = (
+            $package.OriginalToken -ieq $ExactDriver -or
+            (Test-MatchesAnySearchTerm -Value ([string]$package.PublishedName) -SearchTerms @($packageTerms)) -or
+            (Test-MatchesAnySearchTerm -Value ([string]$package.OriginalName) -SearchTerms @($packageTerms))
+        )
+
+        if ($matchesPackage) {
+            $publishedName = [string]$package.PublishedName
+            if ([string]::IsNullOrWhiteSpace($publishedName) -or $seenPublishedNames.Add($publishedName)) {
+                [void]$matchedPackages.Add($package)
+            }
+        }
+    }
+
+    return @($matchedPackages.ToArray() | Sort-Object PublishedName)
 }
 
 function Get-SetupApiLines {
@@ -967,10 +1296,11 @@ function Get-DriverEvidence {
     $sysPath = Join-Path $env:SystemRoot "System32\drivers\$ExactDriver.sys"
     $systemFileExists = Test-Path -LiteralPath $sysPath
     $driverQueryLines = @(driverquery /v | Select-String "(?i)^$regexSafeDriver\s+")
-    $matchedPackages = @($DriverPackages | Where-Object {
+    $tokenMatchedPackages = @($DriverPackages | Where-Object {
             $_.OriginalToken -ieq $ExactDriver
         })
-    $matchedPnpDevices = @(Get-PnpEvidence -ExactDriver $ExactDriver)
+    $matchedPnpDevices = @(Get-PnpEvidence -ExactDriver $ExactDriver -DriverPackages $tokenMatchedPackages -RegistryKeys $matchedServiceKeys)
+    $matchedPackages = @(Get-MatchedDriverPackages -ExactDriver $ExactDriver -DriverPackages $DriverPackages -PnpDevices $matchedPnpDevices)
     $additionalFiles = @(Get-AdditionalEvidenceFiles -ExactDriver $ExactDriver)
     $relatedComponents = @()
     if (-not $SkipRelatedComponents) {
@@ -1065,6 +1395,39 @@ function Show-DriverEvidence {
     if ($Evidence.PnpDevices.Count -gt 0) {
         foreach ($device in $Evidence.PnpDevices) {
             Write-Host "$I_Item $($device.InstanceId) :: $($device.FriendlyName)" -ForegroundColor Yellow
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.InfName)) {
+                Write-Host "    InfName    : $($device.InfName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverName)) {
+                Write-Host "    DriverName : $($device.DriverName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverInfSection)) {
+                Write-Host "    InfSection : $($device.DriverInfSection)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.Manufacturer)) {
+                Write-Host "    Manufacturer: $($device.Manufacturer)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverProviderName)) {
+                Write-Host "    Provider   : $($device.DriverProviderName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.MatchingDeviceId)) {
+                Write-Host "    MatchId    : $($device.MatchingDeviceId)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.ServiceName)) {
+                Write-Host "    Service    : $($device.ServiceName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.Class)) {
+                Write-Host "    Class      : $($device.Class)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.Present)) {
+                Write-Host "    Present    : $($device.Present)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.Status)) {
+                Write-Host "    Status     : $($device.Status)" -ForegroundColor DarkYellow
+            }
+            if ($device.Sources.Count -gt 0) {
+                Write-Host "    Source     : $($device.Sources -join ', ')" -ForegroundColor DarkGray
+            }
         }
     }
     else {
@@ -1532,6 +1895,12 @@ function Remove-DriverEvidence {
             if ($removeDeviceResult.ExitCode -eq 0 -or $removeDeviceText -match 'successfully' -or $removeDeviceText -match 'removed') {
                 Write-Host "$I_Ok Το PnP device αφαιρέθηκε επιτυχώς." -ForegroundColor Green
             }
+            elseif ($removeDeviceText -match '(?i)device instance does not exist in the hardware tree') {
+                Write-Host "$I_Ok Το PnP device ήταν ήδη εκτός hardware tree / ήδη absent." -ForegroundColor Green
+                if (-not [string]::IsNullOrWhiteSpace($removeDeviceText)) {
+                    Write-Host "    $removeDeviceText" -ForegroundColor DarkGray
+                }
+            }
             else {
                 Write-Host "$I_Warn Δεν αφαιρέθηκε πλήρως το PnP device." -ForegroundColor Yellow
                 if (-not [string]::IsNullOrWhiteSpace($removeDeviceText)) {
@@ -1792,7 +2161,7 @@ while ($true) {
             break
         }
 
-        Write-Host "`n$I_Ok Η διαδικασία ολοκληρώθηκε! Προτείνεται ΠΑΝΤΑ επανεκκίνηση του συστήματος." -ForegroundColor Green
+                Write-Host "`n$I_Ok Η διαδικασία ολοκληρώθηκε! Συνιστάται επανεκκίνηση αν θέλεις extra verification ή πριν από reinstall / troubleshooting." -ForegroundColor Green
     }
     else {
         Write-Host "`n$I_Warn Δεν δόθηκε η λέξη 'YES'. Ακύρωση διαγραφής." -ForegroundColor Yellow

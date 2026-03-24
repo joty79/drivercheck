@@ -327,3 +327,63 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. If only review-only linked leftovers remain, the run should end with an informational review-only summary instead of a cleanup prompt.
 *   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation planned after remaining-linked continuation filter fix; user transcript showed the protected-target leak
+
+*   **Date:** 2026-03-25
+*   **Problem:** The exact live-evidence scan could still miss real `PnP` leftovers when Device Manager exposed the useful identifier in signed-driver metadata such as `DeviceName`, `InfName` / `oemXX.inf`, or provider/manufacturer fields instead of the narrower `Get-PnpDevice` fields.
+*   **Root Cause:** `PnP` matching depended too heavily on `Get-PnpDevice` display fields and exact token checks, so aliases visible through `Win32_PnPSignedDriver` never reached the cleanup verifier.
+*   **Guardrail:**
+    1. `PnP` evidence for exact-driver verification must merge `Get-PnpDevice` and `Win32_PnPSignedDriver`.
+    2. `PnP` matching must consider alias terms from the exact token, matched registry/service metadata, and matched package names including `oemXX.inf`.
+    3. When signed-driver metadata contributes the hit, surface `InfName`, `DriverName`, provider/manufacturer, and source in the evidence output so the operator can see why the device matched.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated runtime verification planned with `gsudo`; screenshot evidence showed a Device Manager hit for `Virtual USB MulttKey` while the old `PnP` path reported no match
+
+*   **Date:** 2026-03-25
+*   **Problem:** Even after the `PnP` false-negative fix, cleanup scope could still miss the real `Driver Store` package when the exact token appeared only in device metadata while the removable package was exposed as `DEVPKEY_Device_DriverInfPath = oemXX.inf`.
+*   **Root Cause:** Exact package matching still centered on `OriginalToken`, so a `PnP` hit without direct package-token alignment could end up as `PnP-only` cleanup even though the same device already exposed the removable `oemXX.inf`.
+*   **Guardrail:**
+    1. After `PnP` evidence is collected, enrich matched devices with `Get-PnpDeviceProperty` data such as `DriverInfPath`, `MatchingDeviceId`, `Service`, and `DriverInfSection`.
+    2. Use those enriched `PnP` aliases to correlate the current exact target with `pnputil /enum-drivers` packages before building cleanup scope.
+    3. Prefer showing the correlated `oemXX.inf` in the same evidence run so the operator can remove package + device together.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; VM rerun pending after `PnP`-property correlation patch
+
+*   **Date:** 2026-03-25
+*   **Problem:** Some live `PnP` leftovers still surfaced only as a signed-driver device hit with no visible `InfName`, even though Device Manager events clearly showed `oemXX.inf`.
+*   **Root Cause:** Current-state WMI / device-property surfaces can omit the package name for phantom or partially removed devices, so package correlation cannot rely only on present `PnP` properties.
+*   **Guardrail:**
+    1. If `PnP` evidence exists but direct package correlation is still empty, use `SetupAPI` windows anchored on the device instance, matching device ID, service, and INF section as a fallback package-correlation path.
+    2. Intersect that fallback only with currently enumerated `pnputil` packages to avoid reporting historical packages that are already gone.
+    3. Treat this as correlation help for exact cleanup, not as permission to delete packages absent from current `pnputil` output.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; VM rerun pending after `SetupAPI` package-correlation fallback
+
+*   **Date:** 2026-03-25
+*   **Problem:** The new exact package-correlation heuristics became too broad and could pull unrelated current packages into the primary exact target, which in turn caused false `protected` classification and blocked cleanup for an otherwise removable phantom `PnP` residue.
+*   **Root Cause:** Matching against generic provider/manufacturer-style metadata plus `SetupAPI` fallback windows allowed adjacent but unrelated packages to be promoted into the exact driver evidence set.
+*   **Guardrail:**
+    1. Exact cleanup scope must stay conservative: only direct token/INF-name style package evidence may promote a package into the primary exact target.
+    2. Do not use `ProviderName`, manufacturer-style metadata, or broad `SetupAPI` windows to auto-attach packages to the exact target.
+    3. Keep `SetupAPI` for linked review hints, not for auto-promoting exact `Driver Store` cleanup packages when current package evidence is absent.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; user VM transcript showed false exact package hits (`oem1.inf`, `oem2.inf`) and a bogus `protected` verdict for `multtkey`
+
+*   **Date:** 2026-03-25
+*   **Problem:** `pnputil /remove-device` could print a scary failure-style message even when the target phantom device had already disappeared from Device Manager and the post-check was clean.
+*   **Root Cause:** The removal path treated `The device instance does not exist in the hardware tree` as a generic warning instead of an `already absent` success-equivalent state.
+*   **Guardrail:**
+    1. For `PnP` cleanup, treat `device instance does not exist in the hardware tree` as harmless `already absent`.
+    2. Prefer user-facing outcome accuracy over raw command pessimism when the post-check confirms no exact live evidence remains.
+    3. Reserve yellow failure wording for real unresolved removal problems, not for no-op/already-gone cases.
+*   **Files affected:** `driver_check.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; VM transcript showed the device disappearing from Device Manager while `pnputil` still returned the absent-from-hardware-tree message
+
+*   **Date:** 2026-03-25
+*   **Problem:** The final success message overstated reboot necessity with `Προτείνεται ΠΑΝΤΑ επανεκκίνηση`, even though the VM cleanup validated clean exact state without reboot being required to complete the removal.
+*   **Root Cause:** The UX text used a one-size-fits-all reboot warning instead of distinguishing between `recommended for extra assurance` and `required for completion`.
+*   **Guardrail:**
+    1. Do not say reboot is always required when post-cleanup verification is already clean.
+    2. Phrase reboot as optional-but-recommended for extra verification or before reinstall / troubleshooting.
+    3. Keep final success wording aligned with what the script actually verified in that run.
+*   **Files affected:** `driver_check.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; Hyper-V checkpoint rerun showed successful `PnP` cleanup and clean post-check before reboot

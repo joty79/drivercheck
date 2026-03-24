@@ -2,6 +2,17 @@
 
 Όλες οι notable αλλαγές του project καταγράφονται εδώ.
 
+## 2026-03-25
+
+### Changed
+
+- Το `driver_check.ps1` κάνει πλέον πιο robust `PnP` verification: ενώνει `Get-PnpDevice` και `Win32_PnPSignedDriver`, κάνει exact matching και πάνω σε alias metadata όπως `DeviceName`, `InfName`, `DriverName`, provider/manufacturer και package names τύπου `oemXX.inf`, και δείχνει αυτά τα στοιχεία στο evidence output για πιο αξιόπιστο troubleshooting.
+- Το `driver_check.ps1` εμπλουτίζει πλέον τα matched `PnP` devices και με `Get-PnpDeviceProperty` fields όπως `DriverInfPath`, `MatchingDeviceId`, `Service` και `DriverInfSection`, ώστε να χαρτογραφεί καλύτερα `PnP` residue σε πραγματικό `Driver Store` package και να μη μένει εύκολα σε `PnP-only` cleanup scope.
+- Το `driver_check.ps1` προσθέτει πλέον και `SetupAPI` fallback για package correlation όταν ένα live `PnP` residue φαίνεται στο current state αλλά δεν εκθέτει πια άμεσα το `oemXX.inf` μέσω WMI/device properties. Το fallback περιορίζεται μόνο σε packages που υπάρχουν ακόμη στο τρέχον `pnputil /enum-drivers`.
+- Διορθώθηκε regression στο exact package matching του `driver_check.ps1`: broad heuristics από `ProviderName` και `SetupAPI` fallback μπορούσαν να τραβήξουν άσχετα current packages και να βαφτίσουν λάθος το target ως `protected`. Το exact cleanup scope ξαναγύρισε σε πιο conservative package correlation και το `SetupAPI` μένει πλέον για linked review hints.
+- Το `driver_check.ps1` χειρίζεται πλέον πιο σωστά το `pnputil /remove-device` no-op case: αν το εργαλείο επιστρέψει `The device instance does not exist in the hardware tree`, το script το δείχνει ως `already absent` αντί για misleading warning.
+- Το τελικό success message του `driver_check.ps1` δεν λέει πλέον ότι reboot προτείνεται `ΠΑΝΤΑ`. Πλέον το reboot εμφανίζεται ως σύσταση για extra verification ή πριν από reinstall / troubleshooting.
+
 ## 2026-03-20
 
 ### Changed
