@@ -5,6 +5,56 @@ It strictly adheres to the user-defined formatting and documentation protocols.
 
 ## Critical Fixes Log
 
+*   **Date:** 2026-03-29
+*   **Problem:** The top-level launcher kept a `List Snapshots` action that added little value because the main compare/audit/cleanup flows already showed the same snapshot inventory, while users still needed a safe way to prune old investigation folders.
+*   **Root Cause:** The launcher menu was carrying a passive inventory action instead of a workflow-advancing utility, which made the last menu slot feel redundant.
+*   **Guardrail:**
+    1. Top-level launcher slots should prefer actions that materially advance the workflow, not passive inventory views that are already covered by other pickers.
+    2. If the launcher exposes snapshot deletion, it must be guarded by path verification inside the configured `snapshots` root and a very simple confirm UX (`ENTER = delete`, `ESC = cancel`) instead of heavy typed confirmations.
+    3. Never issue recursive snapshot-folder deletion from the launcher without verifying that the resolved target stays under the intended snapshot root and is not the root itself.
+*   **Files affected:** `DriverCheck.ps1`, `README.md`, `CHANGELOG.md`
+*   **Validation/tests run:** Parser validation planned for launcher after guarded delete-flow addition
+
+*   **Date:** 2026-03-29
+*   **Problem:** Interactive menus across launcher, snapshot flows, cleanup flows, and live driver cleanup did not treat `ESC` consistently, so users could get trapped in numbered menus or rely on blank/`0`-only cancellation.
+*   **Root Cause:** Menu/input logic evolved independently in each script and relied on mixed `Read-Host` conventions instead of one stable cancel contract.
+*   **Guardrail:**
+    1. All interactive drivercheck menus must accept `ESC` as a first-class cancel/exit path, not only blank input or `0`.
+    2. `ESC` handling must apply not only to top-level menus but also to pickers, selective lists, certificate-mode prompts, cleanup scope prompts, and continuation menus.
+    3. When the host allows console key reads, the real `Esc` keypress must cancel immediately without requiring `Enter`.
+    4. When a host does not expose direct key reads, text fallback prompts must still document and accept `ESC`/`ESCAPE`.
+*   **Files affected:** `DriverCheck.ps1`, `internal\Compare-DriverSnapshots.ps1`, `internal\DriverCheckWorkbench.ps1`, `internal\Invoke-DriverCleanupFromSnapshots.ps1`, `internal\Invoke-DriverLiveCheck.ps1`, `internal\Save-DriverSnapshot.ps1`, `README.md`, `CHANGELOG.md`
+*   **Validation/tests run:** Parser validation for launcher + internal scripts; elevated smoke run of `internal\Invoke-DriverLiveCheck.ps1 -DriverName 1394ohci`
+
+*   **Date:** 2026-03-29
+*   **Problem:** The launcher header/UI carried a `Current Case` concept that confused the user, and menu-style prompts still mixed explicit choices with implicit blank-input cancellation.
+*   **Root Cause:** The launcher inherited case-priority helpers from earlier snapshot organization work, but the main daily-use UX no longer needed that extra state.
+*   **Guardrail:**
+    1. Keep the main launcher header focused on universally useful state only; avoid abstract workflow state like `Current Case` unless it is truly necessary.
+    2. In menu-style prompts, prefer explicit numbered choices plus `ESC`; do not overload blank `Enter` as hidden cancel behavior.
+    3. Visual style should stay consistent across launcher-driven flows, especially `Save Snapshot` and `Live Driver Check`.
+    4. As the launcher grows, prefer arrow-key navigation plus number shortcuts for the top-level menu instead of forcing the user to remember menu numbers.
+*   **Files affected:** `DriverCheck.ps1`, `internal\Invoke-DriverLiveCheck.ps1`, `CHANGELOG.md`
+*   **Validation/tests run:** Parser validation; elevated embedded-header smoke run of `internal\Invoke-DriverLiveCheck.ps1 -DriverName 1394ohci -EmbeddedInLauncher`
+
+*   **Date:** 2026-03-29
+*   **Problem:** The embedded live tool could still terminate the whole launcher because it kept hard `Exit(0)` behavior for blank/`ESC` paths that were correct only in standalone mode.
+*   **Root Cause:** `Invoke-DriverLiveCheck.ps1` was reused inside the launcher, but its exit logic still assumed it owned the whole process.
+*   **Guardrail:**
+    1. Any tool embedded under `DriverCheck.ps1` must return to the launcher on cancel/blank exit paths instead of terminating the full host process.
+    2. Standalone and embedded modes may share logic, but exit behavior must be mode-aware.
+*   **Files affected:** `internal\Invoke-DriverLiveCheck.ps1`, `CHANGELOG.md`
+*   **Validation/tests run:** Parser validation; elevated smoke run of `internal\Invoke-DriverLiveCheck.ps1 -DriverName 1394ohci -EmbeddedInLauncher`
+
+*   **Date:** 2026-03-29
+*   **Problem:** The first arrow-key launcher menu still blinked because it redrew the whole header and menu on every keypress, and the console cursor could flash unpredictably.
+*   **Root Cause:** The menu loop reused the normal header renderer instead of keeping a fixed top area and repainting only the menu block in place.
+*   **Guardrail:**
+    1. Arrow-key menus should prefer in-place redraw (`SetCursorPosition` + line erase) over full-screen `Clear-Host` redraw on every keypress.
+    2. Hide the console cursor while the interactive menu is active, then restore it in `finally`.
+*   **Files affected:** `DriverCheck.ps1`, `README.md`, `CHANGELOG.md`
+*   **Validation/tests run:** Parser validation; elevated launcher smoke start (interactive timeout expected)
+
 *   **Date:** 2026-03-18
 *   **Problem:** User prompted with exact deletion matching without selection, breaking emoji icons in PWSH, abrupt termination instead of loop, permission denied errors on services.
 *   **Root Cause:** Substring matches (`-match`) in the old deletion block caused overly broad deletion scopes. `conhost.exe` lacks native color emoji fallback. Loop structure was missing. `Get-Service` trips on PPL protected services like Windows Defender.
@@ -387,3 +437,188 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. Keep final success wording aligned with what the script actually verified in that run.
 *   **Files affected:** `driver_check.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation; Hyper-V checkpoint rerun showed successful `PnP` cleanup and clean post-check before reboot
+
+*   **Date:** 2026-03-28
+*   **Problem:** Snapshot compare could still miss high-value install residue because registry evidence outside the service tree was not preserved in the focused baseline.
+*   **Root Cause:** The snapshot workflow captured services, packages, files, certs, and `SetupAPI`, but not focused registry changes under `Enum`, `Class`, and `Uninstall` paths that often matter for uninstall forensics.
+*   **Guardrail:**
+    1. Keep registry capture focused and term-driven; do not introduce broad full-registry dumps into the default snapshot workflow.
+    2. Snapshot only high-value uninstall/driver roots such as `Services`, `Enum`, `Control\Class`, and `Uninstall` (`native` + `WOW6432Node`).
+    3. Compare output should distinguish `KEY` additions/removals from `VALUE` additions/removals/changes so install residue stays readable for humans.
+*   **Files affected:** `Save-DriverSnapshot.ps1`, `Compare-DriverSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation for snapshot/compare scripts; synthetic snapshot compare run for focused registry additions and changed values
+
+*   **Date:** 2026-03-29
+*   **Problem:** The first live VM run of the new focused-registry snapshot crashed immediately with `Method invocation failed` on `HashSet.ToArray()`.
+*   **Root Cause:** A .NET collection method was assumed to be directly callable from the current `PowerShell 7` runtime path, but the `HashSet[string]` instance exposed in script did not support that call shape here.
+*   **Guardrail:**
+    1. After new collection-based helper logic is added, prefer plain PowerShell enumeration over convenience methods like `.ToArray()` unless the method is known-good in the exact runtime path.
+    2. Treat first real VM/host execution as a distinct validation step even after parser validation and synthetic tests pass.
+    3. Record real PowerShell runtime incompatibilities immediately in project memory when they surface.
+*   **Files affected:** `Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Real VM repro from user transcript; parser validation after fix
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot compare remained awkward in real use because it expected exact paths even for common repo-local compare runs.
+*   **Root Cause:** The script supported only explicit `BeforePath` / `AfterPath` arguments, while the friendlier numbered picker existed only inside the workbench.
+*   **Guardrail:**
+    1. Standalone snapshot tools should not require absolute paths for common repo-local use.
+    2. If a script consumes snapshot folders directly, support at least one friendly path: numbered picker, short folder names, or both.
+    3. Keep advanced/manual path support, but do not make it the only everyday UX.
+*   **Files affected:** `Compare-DriverSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; compare rerun using only snapshot folder names under default `SnapshotsRoot`
+
+*   **Date:** 2026-03-29
+*   **Problem:** Even with better pickers, the repo still felt fragmented because normal use required remembering multiple script names and unlabeled snapshot saves quickly made the UI unreadable.
+*   **Root Cause:** The repo had useful engine scripts, but lacked one clear main entry point and allowed snapshot capture to proceed too easily without `CaseName` / `Stage` guidance.
+*   **Guardrail:**
+    1. Keep one clear main launcher script for everyday use, even if engine scripts remain separate underneath.
+    2. Snapshot capture should actively prompt for human-readable `CaseName` / `Stage` labels when they are missing.
+    3. Engine scripts may stay available for advanced/manual use, but the default UX should optimize for readability over script-name memorization.
+*   **Files affected:** `DriverCheck.ps1`, `Save-DriverSnapshot.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation for launcher/save scripts; launcher smoke test planned next
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot lists still felt noisy because they surfaced internal `FocusTerm` metadata in the picker before compare results existed.
+*   **Root Cause:** UI was exposing capture internals that were useful for forensic metadata but not for everyday snapshot selection.
+*   **Guardrail:**
+    1. Keep internal capture metadata available, but do not show it by default in compact picker/list UIs unless it directly helps the current choice.
+    2. Snapshot selection screens should prioritize human labels (`Case`, `Stage`, time) over internal engine details.
+*   **Files affected:** `DriverCheck.ps1`, `Compare-DriverSnapshots.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation after UI output trim; launcher smoke test via `gsudo`
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot folders still looked machine-generated and were harder to scan than the human labels the user actually cared about.
+*   **Root Cause:** Folder creation always prefixed a raw sortable timestamp (`yyyyMMdd-HHmmss`) ahead of the snapshot label, so even well-labeled `CaseName` / `Stage` snapshots still read like technical artifacts instead of checkpoints.
+*   **Guardrail:**
+    1. Prefer human-first snapshot folder names for everyday workflows, with `CaseName-Stage MM-dd-yyyy - HH.mm` style formatting when labels are available.
+    2. Keep exact timestamps in `metadata.json`; the folder name should optimize for scan/readability, not be the only source of time precision.
+    3. Preserve uniqueness with a safe suffix fallback instead of forcing machine-style timestamp prefixes back into the visible folder name.
+*   **Files affected:** `Save-DriverSnapshot.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated launcher smoke test; elevated snapshot save rerun pending on next user VM pass
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot compare pickers could still nudge the user into awkward choices because the default ordering favored latest-first recency even when selecting the baseline, and the chosen pair was not highlighted clearly before running the diff.
+*   **Root Cause:** Picker sorting optimized for general listing rather than compare chronology, and the UI did not surface a clear `Before` / `After` selection state.
+*   **Guardrail:**
+    1. For compare and cleanup baseline selection, prefer chronology-friendly ordering so earlier snapshots appear first.
+    2. Before running compare-style actions, show a clear selected-pair preview with explicit `Base (Before)` and `Compare (After)` labels.
+    3. Selection screens should reduce wrong-order mistakes before execution, not rely on the user to infer chronology from timestamps alone.
+*   **Files affected:** `DriverCheck.ps1`, `Compare-DriverSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; launcher and compare picker smoke tests pending after UI update
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot-driven cleanup could delete services/packages/files before trying the software's own uninstaller, which risks breaking the official uninstall path for MSI-backed installs such as HASP tooling.
+*   **Root Cause:** The workflow captured uninstall-related registry residue only as focused forensic hits, but did not preserve structured uninstall entries or elevate them into first-class cleanup actions.
+*   **Guardrail:**
+    1. Preserve structured machine uninstall entries in snapshots as separate evidence, not only as generic registry diff lines.
+    2. When a `Before -> After` diff shows a new official uninstall entry, prefer that uninstall action before direct residue cleanup of services/packages/files.
+    3. Treat snapshot-driven deletion as leftover cleanup, not as a replacement for a valid official uninstall path when one exists.
+    4. Use safe property access when reading uninstall-entry registry values because many entries omit fields like `InstallSource`, `QuietUninstallString`, or `WindowsInstaller`.
+*   **Files affected:** `Save-DriverSnapshot.ps1`, `Compare-DriverSnapshots.ps1`, `Invoke-DriverCleanupFromSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated save smoke test; synthetic compare output for uninstall-entry additions; elevated audit-only cleanup plan showing `Installed Application` action
+
+*   **Date:** 2026-03-29
+*   **Problem:** Raw uninstall-entry diffs were too noisy because shared Microsoft runtimes and background component churn (for example `EdgeWebView`) appeared next to genuinely relevant vendor runtimes.
+*   **Root Cause:** Every uninstall-entry addition was treated as equally important, without any confidence/triage layer based on vendor and product naming.
+*   **Guardrail:**
+    1. `Installed Applications` output should classify entries as `LIKELY`, `REVIEW`, or `NOISE` instead of presenting them as equal cleanup candidates.
+    2. Only `LIKELY` uninstall entries should enter the auto-cleanup plan by default.
+    3. Shared runtimes/dependencies such as `Visual C++` should stay `REVIEW` unless stronger install correlation is added later.
+    4. Background churn candidates such as `EdgeWebView` should be marked `NOISE`, not promoted into cleanup actions.
+*   **Files affected:** `Compare-DriverSnapshots.ps1`, `Invoke-DriverCleanupFromSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; synthetic compare triage test (`Sentinel Runtime`, `Visual C++`, `EdgeWebView`); elevated audit-only cleanup plan showing only `LIKELY` uninstall action
+
+*   **Date:** 2026-03-29
+*   **Problem:** The cleanup audit `Findings Summary` was harder to scan quickly because zero and non-zero counts shared the same plain styling.
+*   **Root Cause:** Summary lines used uniform `Write-Host` output without a reusable visual rule for value emphasis.
+*   **Guardrail:**
+    1. In audit/count summaries, non-zero values should stand out positively while zero values should visually fade into the background.
+    2. Prefer one reusable helper for summary-count rendering instead of repeating ad-hoc color logic on every line.
+    3. Keep live audit interpretation tied to the same target OS that produced the snapshots; do not treat desktop-state audit output as authoritative for VM installs.
+*   **Files affected:** `Invoke-DriverCleanupFromSnapshots.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated audit-only smoke run against synthetic zero-count snapshot pair
+
+*   **Date:** 2026-03-29
+*   **Problem:** Snapshot compare could still leave uncertainty around whether a problematic `PnP` device was truly tied to the target driver stack, because device entries were preserved only with shallow fields like name/class/status.
+*   **Root Cause:** The richer `Device Manager`-style fields already used in `driver_check.ps1` (`INF`, service, matching ID, driver key, provider, version) had not been propagated into the snapshot/compare workflow.
+*   **Guardrail:**
+    1. `PnP` snapshots should preserve explicit driver-binding fields, not just device identity/status.
+    2. For driver uninstall forensics, the most valuable `PnP` links are `InfName`, `Service`, `DriverInfSection`, `MatchingDeviceId`, `DriverKey`, `ClassGuid`, `DriverVersion`, and `DriverDate`.
+    3. Compare output should surface these links directly for added devices so the operator does not need to infer the connection from separate sections.
+    4. Cleanup plan labels should include `InfName` / `Service` when available so device-removal steps stay visibly tied to the underlying driver stack.
+    5. Backward compatibility matters: compare must tolerate older snapshots that do not contain the newer `PnP` fields.
+*   **Files affected:** `Save-DriverSnapshot.ps1`, `Compare-DriverSnapshots.ps1`, `Invoke-DriverCleanupFromSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated snapshot save smoke showing enriched `pnp-devices.json`; synthetic compare showing explicit `PnP` detail lines; elevated audit-only cleanup plan showing `PnP Device :: oemX.inf :: service` labeling
+
+*   **Date:** 2026-03-29
+*   **Problem:** Compare diffs and cleanup guidance were logically correct but still harder to scan than they needed to be, and a synthetic audit run exposed a null-input `BCD` compare edge case.
+*   **Root Cause:** Add/remove lines still used older yellow-toned colors, cleanup actions were shown as one flat list without a clear recommended order, and the `Invoke-DriverCleanupFromSnapshots.ps1` `BCD` diff path passed potentially null arrays straight into `Compare-Object`.
+*   **Guardrail:**
+    1. In snapshot compare output, prefer stable semantic colors: `+` additions in `Green` and `-` removals in `Red`.
+    2. For snapshot-driven cleanup, always surface the recommended removal order explicitly when an official uninstaller exists; do not make the operator infer that `[4]` can launch it automatically.
+    3. Group cleanup actions into human-readable phases (`Official Uninstall`, devices, services, packages, files, etc.) instead of one long flat list.
+    4. Wrap `Compare-Object` inputs in explicit arrays when either snapshot side may be empty/null, especially for optional evidence like `BCD`.
+*   **Files affected:** `Compare-DriverSnapshots.ps1`, `Invoke-DriverCleanupFromSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation for compare/cleanup scripts; elevated synthetic audit-only run after `BCD` null-array fix
+
+*   **Date:** 2026-03-29
+*   **Problem:** Even after successful package/service/device cleanup, narrow registry leftovers such as `Services\EventLog\System\hasplms` still remained visible in `BeforeInstall -> AfterCleanup` compare output but could not enter the snapshot-driven cleanup plan.
+*   **Root Cause:** `Invoke-DriverCleanupFromSnapshots.ps1` preserved `Focused Registry` only as evidence and ignored it entirely when building cleanup actions.
+*   **Guardrail:**
+    1. Snapshot-driven cleanup may promote focused-registry evidence into cleanup actions only through narrow safe patterns, not a broad generic registry-delete engine.
+    2. Start with high-value low-risk leftovers such as `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\System\<name>`.
+    3. Keep all other focused-registry diffs evidence-first until a specific safe cleanup rule is justified and verified.
+*   **Files affected:** `Invoke-DriverCleanupFromSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated synthetic audit-only smoke run showing pending `Registry` action for a temporary `EventLog\System\CodexSmokeRegistry` key
+
+*   **Date:** 2026-03-29
+*   **Problem:** The live `driver_check.ps1` still had weaker registry visibility than the snapshot workflow, even though the snapshot comparisons had already proven that high-value residue often lives in `Enum`, `Class`, `EventLog`, and uninstall roots.
+*   **Root Cause:** Live evidence focused mainly on service keys, packages, `PnP`, and files; the richer snapshot-inspired focused-registry view had not been propagated back into the current-state tool.
+*   **Guardrail:**
+    1. When snapshot investigations reveal stable high-value evidence roots, reflect that learning back into the live current-state tool instead of keeping the two workflows mentally separate.
+    2. For live driver forensics, add focused registry evidence before considering broader cleanup expansion.
+    3. Preserve structured `FocusedRegistry` data as an object with `.Keys` / `.Values`; do not wrap it in `@()` and accidentally erase the expected shape in no-hit paths.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated no-hit runtime check of `driver_check.ps1 -DriverName DefinitelyNoSuchDriver123`; verified `Focused Registry Evidence` no-hit path after object-shape fix
+
+*   **Date:** 2026-03-29
+*   **Problem:** The first live `Focused Registry Evidence` pass in `driver_check.ps1` could explode into unusable output and burn operator attention because it reused too many broad `PnP` / metadata fields as registry search terms.
+*   **Root Cause:** Terms such as provider/manufacturer/class GUID/parent/enumerator and other broad `Device Manager` metadata are useful for correlation, but too loose for live registry text matching.
+*   **Guardrail:**
+    1. Live focused-registry matching must stay narrower than snapshot-style forensic capture.
+    2. Prefer exact driver/package/service/device identifiers (`service name`, `oemXX.inf`, `InfName`, `MatchingDeviceId`, `InstanceId`, exact token) over broad metadata fields.
+    3. Treat `Device Manager` richness as display/correlation context first, not as permission to widen live registry search aggressively.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated no-hit runtime check after focused-registry term tightening
+
+*   **Date:** 2026-03-29
+*   **Problem:** Even after removing broad metadata terms, the live `Focused Registry Evidence` section could still produce large unrelated output for drivers whose `InstanceId` ended in common leaf values such as `ROOT\SYSTEM\0001`.
+*   **Root Cause:** `Add-SearchTerm` tokenized structured identifiers and converted `InstanceId` values like `ROOT\SYSTEM\0001` into generic leaf terms like `0001`, which then matched many unrelated `Control\Class\...\0001` and similar registry paths.
+*   **Guardrail:**
+    1. Structured identifiers such as `InstanceId` must stay literal in live focused-registry matching.
+    2. Do not derive fallback leaf tokens from hierarchical IDs when those leafs are too generic to be high-signal.
+    3. If a matcher term can plausibly collide with many system paths (`0000`, `0001`, etc.), prefer exact literal evidence over convenience tokenization.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; transcript review of `Administrator PowerShell.txt` isolated the remaining `\0001` collision pattern
+
+*   **Date:** 2026-03-29
+*   **Problem:** The live `DriverQuery` section was technically correct but hard to read because it dumped raw wrapped console output from `driverquery /v`.
+*   **Root Cause:** The script matched plain text lines from `driverquery /v` and printed them as-is, which breaks badly in narrow terminals and also encouraged wording that implied every match was necessarily `running`.
+*   **Guardrail:**
+    1. For `DriverQuery` evidence, prefer parsed `driverquery /v /fo csv` output over raw console text.
+    2. Show compact structured fields (`Module`, `Display`, `Type`, `StartMode`, `State`, `Status`, `Path`) instead of one long wrapped line.
+    3. Do not claim a driver is `loaded/active` unless the parsed `State` actually says `Running`.
+*   **Files affected:** `driver_check.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated runtime run of `driver_check.ps1 -DriverName 1394ohci` confirmed structured `DriverQuery` output and correct `Stopped` wording
+
+*   **Date:** 2026-03-29
+*   **Problem:** The repo root had grown multiple user-runnable `.ps1` files, which made the project feel less polished than the main launcher and made the intended entry point less obvious.
+*   **Root Cause:** Engine scripts accumulated in the root next to the main launcher instead of being grouped behind a single user-facing entry point.
+*   **Guardrail:**
+    1. Keep only one user-facing PowerShell script in the repo root: `DriverCheck.ps1`.
+    2. Move engine/helper scripts under `internal\` so the root stays clean and the main entry point is obvious.
+    3. Prefer clearer internal naming for engine scripts, e.g. `Invoke-DriverLiveCheck.ps1` instead of `driver_check.ps1`.
+    4. When root/internal layout changes, update launcher references and README examples in the same pass.
+*   **Files affected:** `DriverCheck.ps1`, `internal\Invoke-DriverLiveCheck.ps1`, `internal\Save-DriverSnapshot.ps1`, `internal\Compare-DriverSnapshots.ps1`, `internal\Invoke-DriverCleanupFromSnapshots.ps1`, `internal\DriverCheckWorkbench.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Root `.ps1` inventory check; parser validation after path updates; elevated runtime validation of moved live tool via `internal\Invoke-DriverLiveCheck.ps1`

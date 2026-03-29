@@ -1,11 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$DriverName
+    [string]$DriverName,
+    [switch]$EmbeddedInLauncher
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:ExitLiveDriverCheck = $false
 
 function Test-CurrentSessionElevated {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -22,6 +24,9 @@ function Start-SelfElevatedInstance {
     $argumentList = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
     if (-not [string]::IsNullOrWhiteSpace($DriverName)) {
         $argumentList += @('-DriverName', $DriverName)
+    }
+    if ($EmbeddedInLauncher) {
+        $argumentList += '-EmbeddedInLauncher'
     }
 
     Start-Process -FilePath $pwshPath -ArgumentList $argumentList -Verb RunAs | Out-Null
@@ -65,9 +70,20 @@ function Clear-HostSafe {
 
 function Show-Header {
     Clear-HostSafe
-    Write-Host '===============================================' -ForegroundColor Cyan
-    Write-Host '           ΔΙΑΧΕΙΡΙΣΗ SYSTEM DRIVERS           ' -ForegroundColor White
-    Write-Host '===============================================' -ForegroundColor Cyan
+    if ($EmbeddedInLauncher) {
+        Write-Host ('=' * 62) -ForegroundColor Cyan
+        Write-Host ' 🛠️ DriverCheck' -ForegroundColor Cyan -NoNewline
+        Write-Host '  main launcher' -ForegroundColor DarkGray
+        Write-Host ('=' * 62) -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host 'Live Driver Check' -ForegroundColor Green
+        Write-Host '-----------------' -ForegroundColor Green
+    }
+    else {
+        Write-Host '===============================================' -ForegroundColor Cyan
+        Write-Host '           ΔΙΑΧΕΙΡΙΣΗ SYSTEM DRIVERS           ' -ForegroundColor White
+        Write-Host '===============================================' -ForegroundColor Cyan
+    }
     Write-Host ''
 }
 
@@ -77,6 +93,38 @@ function Read-HostTrimmed {
     )
 
     try {
+        if (-not [Console]::IsInputRedirected) {
+            $displayPrompt = if ([string]::IsNullOrWhiteSpace($Prompt)) { '' } else { "${Prompt}: " }
+            Write-Host -NoNewline $displayPrompt
+
+            $buffer = [System.Text.StringBuilder]::new()
+            while ($true) {
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'Enter' {
+                        Write-Host ''
+                        return $buffer.ToString().Trim()
+                    }
+                    'Escape' {
+                        Write-Host ''
+                        return ([string][char]27)
+                    }
+                    'Backspace' {
+                        if ($buffer.Length -gt 0) {
+                            [void]$buffer.Remove($buffer.Length - 1, 1)
+                            Write-Host -NoNewline "`b `b"
+                        }
+                    }
+                    default {
+                        if (-not [char]::IsControl($key.KeyChar)) {
+                            [void]$buffer.Append($key.KeyChar)
+                            Write-Host -NoNewline $key.KeyChar
+                        }
+                    }
+                }
+            }
+        }
+
         $value = Read-Host $Prompt
     }
     catch {
@@ -90,20 +138,172 @@ function Read-HostTrimmed {
     return ([string]$value).Trim()
 }
 
+function Test-IsEscapeInput {
+    param(
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $trimmedValue = $Value.Trim()
+    if ($trimmedValue.Length -eq 1 -and [int][char]$trimmedValue[0] -eq 27) {
+        return $true
+    }
+
+    return $trimmedValue -match '^(?i:esc|escape)$'
+}
+
+function Read-SingleChoiceMenu {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Items,
+        [string]$Prompt = 'Choose an option',
+        [string]$CancelLabel = 'Cancel'
+    )
+
+    function Get-ConsoleSafeLine {
+        param(
+            [string]$Text
+        )
+
+        $rawText = if ($null -eq $Text) { '' } else { [string]$Text }
+        try {
+            $maxWidth = [Math]::Max(20, [Console]::BufferWidth - 1)
+        }
+        catch {
+            $maxWidth = 120
+        }
+
+        if ($rawText.Length -le $maxWidth) {
+            return $rawText
+        }
+
+        return ($rawText.Substring(0, $maxWidth - 3) + '...')
+    }
+
+    function Read-SingleChoiceFallback {
+        foreach ($item in $Items) {
+            Write-Host (Get-ConsoleSafeLine -Text ("  [{0}] {1}" -f $item.Key, $item.Label)) -ForegroundColor $item.Color
+        }
+        Write-Host "  [ESC] $CancelLabel" -ForegroundColor DarkGray
+        $choice = Read-HostTrimmed -Prompt $Prompt
+        if (Test-IsEscapeInput -Value $choice) {
+            return $null
+        }
+
+        return ($Items | Where-Object { $_.Key -eq $choice } | Select-Object -First 1)
+    }
+
+    if ([Console]::IsInputRedirected) {
+        return Read-SingleChoiceFallback
+    }
+
+    $selectedIndex = 0
+    $eraseLine = '{0}[K' -f [char]27
+    $frameHeight = $Items.Count + 1
+
+    try {
+        $visibleBottom = [Console]::WindowTop + [Console]::WindowHeight - 1
+        $availableRows = $visibleBottom - [Console]::CursorTop + 1
+    }
+    catch {
+        $availableRows = 0
+    }
+
+    if ($availableRows -gt 0 -and $frameHeight -gt $availableRows) {
+        Write-Host ''
+        Write-Host 'Long list detected. Using stable prompt mode for this menu.' -ForegroundColor DarkYellow
+        return Read-SingleChoiceFallback
+    }
+
+    [Console]::CursorVisible = $false
+    try {
+        $menuTop = [Console]::CursorTop
+        $initialBufferWidth = [Console]::BufferWidth
+        $initialWindowHeight = [Console]::WindowHeight
+        for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
+            Write-Host ''
+        }
+
+        function Write-SingleChoiceFrame {
+            [Console]::SetCursorPosition(0, $menuTop)
+            for ($i = 0; $i -lt $Items.Count; $i++) {
+                $item = $Items[$i]
+                $isSelected = $i -eq $selectedIndex
+                $prefix = if ($isSelected) { '❯' } else { ' ' }
+                $line = Get-ConsoleSafeLine -Text ("{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label)
+                $color = if ($isSelected) { 'White' } else { $item.Color }
+                Write-Host "$line$eraseLine" -ForegroundColor $color
+            }
+            $hintLine = Get-ConsoleSafeLine -Text "[UP/DOWN] Move  [ENTER] Select  [1-9] Shortcut  [ESC] $CancelLabel"
+            Write-Host "$hintLine$eraseLine" -ForegroundColor DarkGray
+        }
+
+        while ($true) {
+            if ([Console]::BufferWidth -ne $initialBufferWidth -or [Console]::WindowHeight -ne $initialWindowHeight) {
+                [Console]::CursorVisible = $true
+                Write-Host ''
+                Write-Host 'Resize detected. Falling back to stable prompt for this menu.' -ForegroundColor DarkYellow
+                return Read-SingleChoiceFallback
+            }
+
+            Write-SingleChoiceFrame
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                'UpArrow' {
+                    if ($selectedIndex -gt 0) {
+                        $selectedIndex--
+                    }
+                }
+                'DownArrow' {
+                    if ($selectedIndex -lt ($Items.Count - 1)) {
+                        $selectedIndex++
+                    }
+                }
+                'Enter' {
+                    return $Items[$selectedIndex]
+                }
+                'Escape' {
+                    return $null
+                }
+                default {
+                    $typedKey = [string]$key.KeyChar
+                    for ($i = 0; $i -lt $Items.Count; $i++) {
+                        if ($Items[$i].Key -eq $typedKey) {
+                            $selectedIndex = $i
+                            Write-SingleChoiceFrame
+                            Start-Sleep -Milliseconds 90
+                            return $Items[$selectedIndex]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
 function Wait-ActionOrRestart {
     Write-Host ''
-    Write-Host 'Πατήστε [ENTER] για νέα αναζήτηση ή [ESC] για έξοδο (κλείσιμο παραθύρου)...' -ForegroundColor DarkYellow
+    $exitText = if ($EmbeddedInLauncher) { 'επιστροφή στο main menu' } else { 'έξοδο (κλείσιμο παραθύρου)' }
+    Write-Host "Πατήστε [ENTER] για νέα αναζήτηση ή [ESC] για $exitText..." -ForegroundColor DarkYellow
 
     try {
         while ($true) {
             if ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
                 if ($key.Key -eq [ConsoleKey]::Escape) {
-                    [Environment]::Exit(0)
+                    $script:ExitLiveDriverCheck = $true
+                    return $false
                 }
 
                 if ($key.Key -eq [ConsoleKey]::Enter) {
-                    return
+                    return $true
                 }
             }
 
@@ -111,11 +311,21 @@ function Wait-ActionOrRestart {
         }
     }
     catch {
-        $fallback = Read-HostTrimmed -Prompt 'ENTER για νέα αναζήτηση ή γράψε Q για έξοδο'
-        if ($fallback -match '^(?i:q)$') {
-            [Environment]::Exit(0)
+        $fallbackPrompt = if ($EmbeddedInLauncher) {
+            'ENTER για νέα αναζήτηση ή γράψε Q/ESC για επιστροφή στο main menu'
+        }
+        else {
+            'ENTER για νέα αναζήτηση ή γράψε Q/ESC για έξοδο'
+        }
+
+        $fallback = Read-HostTrimmed -Prompt $fallbackPrompt
+        if ($fallback -match '^(?i:q)$' -or (Test-IsEscapeInput -Value $fallback)) {
+            $script:ExitLiveDriverCheck = $true
+            return $false
         }
     }
+
+    return $true
 }
 
 function Invoke-NativeCapture {
@@ -217,7 +427,8 @@ function Add-SearchTerm {
     param(
         [System.Collections.Generic.HashSet[string]]$Set,
         [AllowEmptyString()]
-        [string]$Value
+        [string]$Value,
+        [switch]$LiteralOnly
     )
 
     if ([string]::IsNullOrWhiteSpace($Value)) {
@@ -230,6 +441,10 @@ function Add-SearchTerm {
     }
 
     [void]$Set.Add($trimmedValue)
+
+    if ($LiteralOnly) {
+        return
+    }
 
     $token = Convert-ToDriverToken -Value $trimmedValue
     if (-not [string]::IsNullOrWhiteSpace($token)) {
@@ -285,6 +500,18 @@ function Add-OrUpdatePnpEvidenceEntry {
         [string]$ServiceName,
         [AllowEmptyString()]
         [string]$DriverInfSection,
+        [AllowEmptyString()]
+        [string]$DriverKey,
+        [AllowEmptyString()]
+        [string]$ClassGuid,
+        [AllowEmptyString()]
+        [string]$EnumeratorName,
+        [AllowEmptyString()]
+        [string]$Parent,
+        [AllowEmptyString()]
+        [string]$DriverVersion,
+        [AllowEmptyString()]
+        [string]$DriverDate,
         [string]$Source
     )
 
@@ -315,6 +542,12 @@ function Add-OrUpdatePnpEvidenceEntry {
             MatchingDeviceId = ''
             ServiceName = ''
             DriverInfSection = ''
+            DriverKey = ''
+            ClassGuid = ''
+            EnumeratorName = ''
+            Parent = ''
+            DriverVersion = ''
+            DriverDate = ''
             Sources = [System.Collections.Generic.List[string]]::new()
         }
     }
@@ -332,7 +565,13 @@ function Add-OrUpdatePnpEvidenceEntry {
             @{ Name = 'DriverProviderName'; Value = $DriverProviderName },
             @{ Name = 'MatchingDeviceId'; Value = $MatchingDeviceId },
             @{ Name = 'ServiceName'; Value = $ServiceName },
-            @{ Name = 'DriverInfSection'; Value = $DriverInfSection }
+            @{ Name = 'DriverInfSection'; Value = $DriverInfSection },
+            @{ Name = 'DriverKey'; Value = $DriverKey },
+            @{ Name = 'ClassGuid'; Value = $ClassGuid },
+            @{ Name = 'EnumeratorName'; Value = $EnumeratorName },
+            @{ Name = 'Parent'; Value = $Parent },
+            @{ Name = 'DriverVersion'; Value = $DriverVersion },
+            @{ Name = 'DriverDate'; Value = $DriverDate }
         )) {
         if ([string]::IsNullOrWhiteSpace([string]$entry.($fieldUpdate.Name)) -and -not [string]::IsNullOrWhiteSpace([string]$fieldUpdate.Value)) {
             $entry.($fieldUpdate.Name) = [string]$fieldUpdate.Value
@@ -413,6 +652,226 @@ function Get-ServiceRegistryInventory {
     }
 
     return @($services | Sort-Object Name)
+}
+
+function Convert-RegistryValueDataToString {
+    param(
+        [object]$ValueData
+    )
+
+    if ($null -eq $ValueData) {
+        return ''
+    }
+
+    if ($ValueData -is [byte[]]) {
+        return ('HEX:{0}' -f ([System.BitConverter]::ToString($ValueData)))
+    }
+
+    if ($ValueData -is [string[]]) {
+        return ($ValueData -join '; ')
+    }
+
+    if ($ValueData -is [System.Array]) {
+        return ((@($ValueData) | ForEach-Object { [string]$_ }) -join '; ')
+    }
+
+    return [string]$ValueData
+}
+
+function Get-DriverQueryEntriesSafe {
+    param(
+        [string]$ExactDriver
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExactDriver)) {
+        return @()
+    }
+
+    try {
+        $csvLines = @(driverquery /v /fo csv 2>$null)
+        if ($csvLines.Count -eq 0) {
+            return @()
+        }
+
+        $parsedEntries = @($csvLines | ConvertFrom-Csv)
+        if ($parsedEntries.Count -eq 0) {
+            return @()
+        }
+
+        return @(
+            $parsedEntries |
+                Where-Object { [string]$_.'Module Name' -ieq $ExactDriver } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        ModuleName  = [string]$_.'Module Name'
+                        DisplayName = [string]$_.'Display Name'
+                        Description = [string]$_.'Description'
+                        DriverType  = [string]$_.'Driver Type'
+                        StartMode   = [string]$_.'Start Mode'
+                        State       = [string]$_.'State'
+                        Status      = [string]$_.'Status'
+                        LinkDate    = [string]$_.'Link Date'
+                        Path        = [string]$_.'Path'
+                        InitBytes   = [string]$_.'Init(bytes)'
+                    }
+                }
+        )
+    }
+    catch {
+        return @()
+    }
+}
+
+function Get-MatchingTerms {
+    param(
+        [string[]]$Terms,
+        [string[]]$Texts
+    )
+
+    $matches = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($term in @($Terms)) {
+        if ([string]::IsNullOrWhiteSpace($term)) {
+            continue
+        }
+
+        foreach ($text in @($Texts)) {
+            if (Test-ContainsInsensitive -Value ([string]$text) -Needle $term) {
+                [void]$matches.Add($term)
+            }
+        }
+    }
+
+    return @($matches | Sort-Object)
+}
+
+function Get-FocusedRegistryEvidence {
+    param(
+        [string]$ExactDriver,
+        [object[]]$DriverPackages,
+        [object[]]$RegistryKeys,
+        [object[]]$PnpDevices
+    )
+
+    $searchTerms = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    Add-SearchTerm -Set $searchTerms -Value $ExactDriver
+    Add-SearchTerm -Set $searchTerms -Value "$ExactDriver.inf"
+
+    foreach ($package in @($DriverPackages)) {
+        foreach ($term in @($package.PublishedName, $package.OriginalName, $package.OriginalToken)) {
+            Add-SearchTerm -Set $searchTerms -Value ([string]$term)
+        }
+    }
+
+    foreach ($registryKey in @($RegistryKeys)) {
+        foreach ($term in @($registryKey.Name, $registryKey.ImageToken)) {
+            Add-SearchTerm -Set $searchTerms -Value ([string]$term)
+        }
+    }
+
+    foreach ($device in @($PnpDevices)) {
+        Add-SearchTerm -Set $searchTerms -Value ([string]$device.InstanceId) -LiteralOnly
+        foreach ($term in @(
+                $device.InfName,
+                $device.DriverName,
+                $device.MatchingDeviceId,
+                $device.ServiceName
+            )) {
+            Add-SearchTerm -Set $searchTerms -Value ([string]$term)
+        }
+    }
+
+    $terms = @($searchTerms | Sort-Object)
+    if ($terms.Count -eq 0) {
+        return [pscustomobject]@{
+            Keys = @()
+            Values = @()
+        }
+    }
+
+    $roots = @(
+        @{ Name = 'Services'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Services' },
+        @{ Name = 'Enum'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Enum' },
+        @{ Name = 'Class'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class' },
+        @{ Name = 'Uninstall'; Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' },
+        @{ Name = 'UninstallWow6432'; Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' }
+    )
+
+    $keyHits = New-Object System.Collections.Generic.List[object]
+    $valueHits = New-Object System.Collections.Generic.List[object]
+    $seenKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $seenValues = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root.Path)) {
+            continue
+        }
+
+        foreach ($registryKey in @(Get-ChildItem -LiteralPath $root.Path -Recurse -ErrorAction SilentlyContinue)) {
+            $keyPath = ''
+            try {
+                $keyPath = $registryKey.Name
+            }
+            catch {
+                continue
+            }
+
+            if ([string]::IsNullOrWhiteSpace($keyPath)) {
+                continue
+            }
+
+            $keyMatchedTerms = @(Get-MatchingTerms -Terms $terms -Texts @($keyPath))
+            if ($keyMatchedTerms.Count -gt 0) {
+                $identity = $keyPath
+                if ($seenKeys.Add($identity)) {
+                    $keyHits.Add([pscustomobject]@{
+                            Identity = $identity
+                            RootName = $root.Name
+                            KeyPath = $keyPath
+                            MatchedTerms = ($keyMatchedTerms -join ', ')
+                            MatchSource = 'KeyPath'
+                        })
+                }
+            }
+
+            try {
+                $properties = Get-ItemProperty -LiteralPath $registryKey.PSPath -ErrorAction Stop
+            }
+            catch {
+                continue
+            }
+
+            foreach ($property in $properties.PSObject.Properties) {
+                if ($property.Name -in @('PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider')) {
+                    continue
+                }
+
+                $valueName = [string]$property.Name
+                $valueData = Convert-RegistryValueDataToString -ValueData $property.Value
+                $matchedTerms = @(Get-MatchingTerms -Terms $terms -Texts @($valueName, $valueData))
+                if ($matchedTerms.Count -eq 0) {
+                    continue
+                }
+
+                $identity = '{0}::{1}' -f $keyPath, $valueName
+                if ($seenValues.Add($identity)) {
+                    $valueHits.Add([pscustomobject]@{
+                            Identity = $identity
+                            RootName = $root.Name
+                            KeyPath = $keyPath
+                            ValueName = $valueName
+                            ValueData = $valueData
+                            MatchedTerms = ($matchedTerms -join ', ')
+                            MatchSource = 'Value'
+                        })
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Keys = @($keyHits.ToArray() | Sort-Object KeyPath)
+        Values = @($valueHits.ToArray() | Sort-Object KeyPath, ValueName)
+    }
 }
 
 function Get-RuntimeServicesByNameSafe {
@@ -657,7 +1116,7 @@ function Test-ActionableCleanupEvidence {
         $Evidence.PnpDevices.Count -gt 0 -or
         $Evidence.SystemFileExists -or
         $Evidence.AdditionalFiles.Count -gt 0 -or
-        $Evidence.DriverQueryLines.Count -gt 0
+        $Evidence.DriverQueryEntries.Count -gt 0
     )
 }
 
@@ -800,6 +1259,12 @@ function Get-PnpEvidence {
                 -MatchingDeviceId '' `
                 -ServiceName '' `
                 -DriverInfSection '' `
+                -DriverKey '' `
+                -ClassGuid '' `
+                -EnumeratorName '' `
+                -Parent '' `
+                -DriverVersion '' `
+                -DriverDate '' `
                 -Source 'Get-PnpDevice'
         }
     }
@@ -848,6 +1313,12 @@ function Get-PnpEvidence {
                 -MatchingDeviceId '' `
                 -ServiceName '' `
                 -DriverInfSection '' `
+                -DriverKey '' `
+                -ClassGuid ([string]$signedDriver.ClassGuid) `
+                -EnumeratorName '' `
+                -Parent '' `
+                -DriverVersion ([string]$signedDriver.DriverVersion) `
+                -DriverDate ([string]$signedDriver.DriverDate) `
                 -Source 'Win32_PnPSignedDriver'
         }
     }
@@ -869,11 +1340,29 @@ function Get-PnpEvidence {
         if ([string]::IsNullOrWhiteSpace([string]$entry.DriverInfSection)) {
             $entry.DriverInfSection = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverInfSection'
         }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.DriverKey)) {
+            $entry.DriverKey = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Driver'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.ClassGuid)) {
+            $entry.ClassGuid = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_ClassGuid'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.EnumeratorName)) {
+            $entry.EnumeratorName = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_EnumeratorName'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Parent)) {
+            $entry.Parent = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Parent'
+        }
         if ([string]::IsNullOrWhiteSpace([string]$entry.Manufacturer)) {
             $entry.Manufacturer = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Manufacturer'
         }
         if ([string]::IsNullOrWhiteSpace([string]$entry.DriverProviderName)) {
             $entry.DriverProviderName = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverProvider'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.DriverVersion)) {
+            $entry.DriverVersion = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverVersion'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.DriverDate)) {
+            $entry.DriverDate = Get-PnpPropertyValueSafe -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverDate'
         }
     }
 
@@ -1295,12 +1784,13 @@ function Get-DriverEvidence {
 
     $sysPath = Join-Path $env:SystemRoot "System32\drivers\$ExactDriver.sys"
     $systemFileExists = Test-Path -LiteralPath $sysPath
-    $driverQueryLines = @(driverquery /v | Select-String "(?i)^$regexSafeDriver\s+")
+    $driverQueryEntries = @(Get-DriverQueryEntriesSafe -ExactDriver $ExactDriver)
     $tokenMatchedPackages = @($DriverPackages | Where-Object {
             $_.OriginalToken -ieq $ExactDriver
         })
     $matchedPnpDevices = @(Get-PnpEvidence -ExactDriver $ExactDriver -DriverPackages $tokenMatchedPackages -RegistryKeys $matchedServiceKeys)
     $matchedPackages = @(Get-MatchedDriverPackages -ExactDriver $ExactDriver -DriverPackages $DriverPackages -PnpDevices $matchedPnpDevices)
+    $focusedRegistryEvidence = Get-FocusedRegistryEvidence -ExactDriver $ExactDriver -DriverPackages $matchedPackages -RegistryKeys $matchedServiceKeys -PnpDevices $matchedPnpDevices
     $additionalFiles = @(Get-AdditionalEvidenceFiles -ExactDriver $ExactDriver)
     $relatedComponents = @()
     if (-not $SkipRelatedComponents) {
@@ -1315,9 +1805,10 @@ function Get-DriverEvidence {
         RegistryKeys = @($matchedServiceKeys | Sort-Object Name)
         SystemFilePath = $sysPath
         SystemFileExists = $systemFileExists
-        DriverQueryLines = $driverQueryLines
+        DriverQueryEntries = @($driverQueryEntries)
         DriverPackages = @($matchedPackages | Sort-Object PublishedName)
         PnpDevices = @($matchedPnpDevices | Sort-Object InstanceId)
+        FocusedRegistry = $focusedRegistryEvidence
         AdditionalFiles = @($additionalFiles | Sort-Object FullName)
         RelatedComponents = @($relatedComponents | Sort-Object Token)
         ProtectionInfo = $protectionInfo
@@ -1371,10 +1862,37 @@ function Show-DriverEvidence {
     }
 
     Write-Host "`n$I_Info 3. Έλεγχος στο DriverQuery" -ForegroundColor Cyan
-    if ($Evidence.DriverQueryLines.Count -gt 0) {
-        Write-Host "$I_Item Ο driver βρέθηκε φορτωμένος από τα Windows!" -ForegroundColor Yellow
-        $Evidence.DriverQueryLines | ForEach-Object {
-            Write-Host "    $($_.Line.Trim())" -ForegroundColor DarkYellow
+    if ($Evidence.DriverQueryEntries.Count -gt 0) {
+        $hasRunningDriverQueryEntry = @($Evidence.DriverQueryEntries | Where-Object { [string]$_.State -match '^(?i)running$' }).Count -gt 0
+        if ($hasRunningDriverQueryEntry) {
+            Write-Host "$I_Item Ο driver βρέθηκε στο DriverQuery και είναι active στα Windows." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "$I_Item Βρέθηκε exact DriverQuery entry για τον driver." -ForegroundColor Yellow
+        }
+        foreach ($driverQueryEntry in $Evidence.DriverQueryEntries) {
+            Write-Host "    Module     : $($driverQueryEntry.ModuleName)" -ForegroundColor DarkYellow
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.DisplayName)) {
+                Write-Host "    Display    : $($driverQueryEntry.DisplayName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.DriverType)) {
+                Write-Host "    Type       : $($driverQueryEntry.DriverType.Trim())" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.StartMode)) {
+                Write-Host "    StartMode  : $($driverQueryEntry.StartMode)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.State)) {
+                Write-Host "    State      : $($driverQueryEntry.State)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.Status)) {
+                Write-Host "    Status     : $($driverQueryEntry.Status)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.LinkDate)) {
+                Write-Host "    LinkDate   : $($driverQueryEntry.LinkDate)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$driverQueryEntry.Path)) {
+                Write-Host "    Path       : $($driverQueryEntry.Path)" -ForegroundColor DarkYellow
+            }
         }
     }
     else {
@@ -1416,6 +1934,24 @@ function Show-DriverEvidence {
             if (-not [string]::IsNullOrWhiteSpace([string]$device.ServiceName)) {
                 Write-Host "    Service    : $($device.ServiceName)" -ForegroundColor DarkYellow
             }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverKey)) {
+                Write-Host "    DriverKey  : $($device.DriverKey)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.ClassGuid)) {
+                Write-Host "    ClassGuid  : $($device.ClassGuid)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.EnumeratorName)) {
+                Write-Host "    Enumerator : $($device.EnumeratorName)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.Parent)) {
+                Write-Host "    Parent     : $($device.Parent)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverVersion)) {
+                Write-Host "    DriverVersion: $($device.DriverVersion)" -ForegroundColor DarkYellow
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverDate)) {
+                Write-Host "    DriverDate : $($device.DriverDate)" -ForegroundColor DarkYellow
+            }
             if (-not [string]::IsNullOrWhiteSpace([string]$device.Class)) {
                 Write-Host "    Class      : $($device.Class)" -ForegroundColor DarkYellow
             }
@@ -1434,7 +1970,22 @@ function Show-DriverEvidence {
         Write-Host "$I_Ok Δεν βρέθηκε σχετικό PnP device evidence." -ForegroundColor Green
     }
 
-    Write-Host "`n$I_Info 6. Πρόσθετο File Evidence σε Windows paths" -ForegroundColor Cyan
+    Write-Host "`n$I_Info 6. Focused Registry Evidence" -ForegroundColor Cyan
+    $registryKeys = @($Evidence.FocusedRegistry.Keys)
+    $registryValues = @($Evidence.FocusedRegistry.Values)
+    if ($registryKeys.Count -gt 0 -or $registryValues.Count -gt 0) {
+        foreach ($registryKey in $registryKeys) {
+            Write-Host "$I_Item KEY :: $($registryKey.KeyPath)" -ForegroundColor Yellow
+        }
+        foreach ($registryValue in $registryValues) {
+            Write-Host "$I_Item VALUE :: $($registryValue.KeyPath) :: [$($registryValue.ValueName)] = $($registryValue.ValueData)" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "$I_Ok Δεν βρέθηκε σχετικό focused registry evidence." -ForegroundColor Green
+    }
+
+    Write-Host "`n$I_Info 7. Πρόσθετο File Evidence σε Windows paths" -ForegroundColor Cyan
     $extraFiles = @($Evidence.AdditionalFiles | Where-Object { $_.FullName -ne $Evidence.SystemFilePath })
     if ($extraFiles.Count -gt 0) {
         foreach ($file in $extraFiles) {
@@ -1446,7 +1997,7 @@ function Show-DriverEvidence {
     }
 
     if ($Evidence.RelatedComponents.Count -gt 0) {
-        Write-Host "`n$I_Info 7. Linked Related Components (SetupAPI Evidence)" -ForegroundColor Cyan
+        Write-Host "`n$I_Info 8. Linked Related Components (SetupAPI Evidence)" -ForegroundColor Cyan
         Write-Host "$I_Warn Τα παρακάτω ΔΕΝ είναι hardcoded guesses. Βρέθηκαν linked επειδή εμφανίζονται στο ίδιο SetupAPI install window με το current driver evidence." -ForegroundColor Yellow
         foreach ($relatedItem in $Evidence.RelatedComponents) {
             $relatedColor = 'Yellow'
@@ -1485,9 +2036,11 @@ function Test-EvidenceFound {
         $Evidence.RuntimeServices.Count -gt 0 -or
         $Evidence.RegistryKeys.Count -gt 0 -or
         $Evidence.SystemFileExists -or
-        $Evidence.DriverQueryLines.Count -gt 0 -or
+        $Evidence.DriverQueryEntries.Count -gt 0 -or
         $Evidence.DriverPackages.Count -gt 0 -or
         $Evidence.PnpDevices.Count -gt 0 -or
+        $Evidence.FocusedRegistry.Keys.Count -gt 0 -or
+        $Evidence.FocusedRegistry.Values.Count -gt 0 -or
         $Evidence.AdditionalFiles.Count -gt 0
     )
 }
@@ -1599,7 +2152,7 @@ function Get-EvidenceSummaryText {
     if ($Evidence.SystemFileExists -or $Evidence.AdditionalFiles.Count -gt 0) {
         [void]$parts.Add('files')
     }
-    if ($Evidence.DriverQueryLines.Count -gt 0) {
+    if ($Evidence.DriverQueryEntries.Count -gt 0) {
         [void]$parts.Add('loaded module')
     }
 
@@ -1661,13 +2214,17 @@ function Resolve-CleanupTargets {
     }
 
     Write-Host ''
-    Write-Host '  [1] Exact driver only' -ForegroundColor Green
-    Write-Host "  [2] AIO cleanup: exact + ALL linked targets above $I_Warn CAUTION IT will remove everything at once" -ForegroundColor Yellow
-    Write-Host '  [3] Selective cleanup: exact + choose linked targets you want to remove' -ForegroundColor Cyan
-    Write-Host '  [0] Cancel' -ForegroundColor Red
+    $scopeChoice = Read-SingleChoiceMenu -Items @(
+        [pscustomobject]@{ Key = '1'; Label = 'Exact driver only'; Color = 'Green'; Value = '1' },
+        [pscustomobject]@{ Key = '2'; Label = "AIO cleanup: exact + ALL linked targets above $I_Warn CAUTION IT will remove everything at once"; Color = 'Yellow'; Value = '2' },
+        [pscustomobject]@{ Key = '3'; Label = 'Selective cleanup: exact + choose linked targets you want to remove'; Color = 'Cyan'; Value = '3' },
+        [pscustomobject]@{ Key = '0'; Label = 'Cancel'; Color = 'Red'; Value = '0' }
+    ) -Prompt "$I_Input Διάλεξε cleanup scope (0-3)" -CancelLabel 'Cancel'
+    if ($null -eq $scopeChoice) {
+        return @()
+    }
 
-    $scopeChoice = Read-HostTrimmed -Prompt "`n$I_Input Διάλεξε cleanup scope (0-3)"
-    switch ($scopeChoice) {
+    switch ($scopeChoice.Value) {
         '1' {
             return @($targets)
         }
@@ -1683,9 +2240,10 @@ function Resolve-CleanupTargets {
                 Write-Host "  [$($index + 1)] $($candidate.Token) :: $(Get-EvidenceSummaryText -Evidence $candidate.Evidence)" -ForegroundColor Yellow
             }
             Write-Host '  [0] Cancel selective mode' -ForegroundColor Red
+            Write-Host '  [ESC] Cancel selective mode' -ForegroundColor DarkGray
 
             $selectionText = Read-HostTrimmed -Prompt "$I_Input Γράψε αριθμούς χωρισμένους με κόμμα (π.χ. 1,3)"
-            if ([string]::IsNullOrWhiteSpace($selectionText)) {
+            if ([string]::IsNullOrWhiteSpace($selectionText) -or (Test-IsEscapeInput -Value $selectionText)) {
                 return @()
             }
 
@@ -1749,7 +2307,7 @@ function Confirm-CleanupTargets {
     }
 
     Write-Host 'Η λανθασμένη διαγραφή μπορεί να προκαλέσει αστάθεια ή BSOD στο σύστημα!' -ForegroundColor Red
-    $confirmationText = Read-HostTrimmed -Prompt "`n$I_Input Πληκτρολογήστε 'YES' (με ΚΕΦΑΛΑΙΑ γράμματα) για διαγραφή ή οτιδήποτε άλλο για ακύρωση"
+    $confirmationText = Read-HostTrimmed -Prompt "`n$I_Input Πληκτρολογήστε 'YES' (με ΚΕΦΑΛΑΙΑ γράμματα) για διαγραφή, ή ESC/οτιδήποτε άλλο για ακύρωση"
     return ($confirmationText -ceq 'YES')
 }
 
@@ -1806,11 +2364,15 @@ function Resolve-RemainingCleanupTargets {
 
     Write-Host ''
     if ($RemainingCandidates.Count -eq 1) {
-        Write-Host '  [1] Clean remaining linked target now' -ForegroundColor Yellow
-        Write-Host '  [0] Finish current run' -ForegroundColor Red
+        $continuationChoice = Read-SingleChoiceMenu -Items @(
+            [pscustomobject]@{ Key = '1'; Label = 'Clean remaining linked target now'; Color = 'Yellow'; Value = '1' },
+            [pscustomobject]@{ Key = '0'; Label = 'Finish current run'; Color = 'Red'; Value = '0' }
+        ) -Prompt "$I_Input Διάλεξε συνέχεια cleanup (0-1)" -CancelLabel 'Finish current run'
+        if ($null -eq $continuationChoice) {
+            return @()
+        }
 
-        $continuationChoice = Read-HostTrimmed -Prompt "`n$I_Input Διάλεξε συνέχεια cleanup (0-1)"
-        switch ($continuationChoice) {
+        switch ($continuationChoice.Value) {
             '1' {
                 return @($RemainingCandidates[0].Evidence)
             }
@@ -1820,12 +2382,16 @@ function Resolve-RemainingCleanupTargets {
         }
     }
 
-    Write-Host '  [1] Clean all remaining linked targets now' -ForegroundColor Yellow
-    Write-Host '  [2] Select remaining linked targets now' -ForegroundColor Magenta
-    Write-Host '  [0] Finish current run' -ForegroundColor Red
+    $continuationChoice = Read-SingleChoiceMenu -Items @(
+        [pscustomobject]@{ Key = '1'; Label = 'Clean all remaining linked targets now'; Color = 'Yellow'; Value = '1' },
+        [pscustomobject]@{ Key = '2'; Label = 'Select remaining linked targets now'; Color = 'Magenta'; Value = '2' },
+        [pscustomobject]@{ Key = '0'; Label = 'Finish current run'; Color = 'Red'; Value = '0' }
+    ) -Prompt "$I_Input Διάλεξε συνέχεια cleanup (0-2)" -CancelLabel 'Finish current run'
+    if ($null -eq $continuationChoice) {
+        return @()
+    }
 
-    $continuationChoice = Read-HostTrimmed -Prompt "`n$I_Input Διάλεξε συνέχεια cleanup (0-2)"
-    switch ($continuationChoice) {
+    switch ($continuationChoice.Value) {
         '1' {
             return @($RemainingCandidates | ForEach-Object { $_.Evidence })
         }
@@ -1837,9 +2403,10 @@ function Resolve-RemainingCleanupTargets {
                 Write-Host "  [$($index + 1)] $($candidate.Token) :: $(Get-EvidenceSummaryText -Evidence $candidate.Evidence)" -ForegroundColor Yellow
             }
             Write-Host '  [0] Cancel continuation' -ForegroundColor Red
+            Write-Host '  [ESC] Cancel continuation' -ForegroundColor DarkGray
 
             $selectionText = Read-HostTrimmed -Prompt "$I_Input Γράψε αριθμούς χωρισμένους με κόμμα (π.χ. 1,2)"
-            if ([string]::IsNullOrWhiteSpace($selectionText) -or $selectionText -eq '0') {
+            if ([string]::IsNullOrWhiteSpace($selectionText) -or $selectionText -eq '0' -or (Test-IsEscapeInput -Value $selectionText)) {
                 return @()
             }
 
@@ -1993,18 +2560,24 @@ $I_Package = $script:Icons.Package
 $I_Device = $script:Icons.Device
 
 while ($true) {
+    $script:ExitLiveDriverCheck = $false
     Show-Header
 
     $inputDriver = $DriverName
     $DriverName = ''
 
     if ([string]::IsNullOrWhiteSpace($inputDriver)) {
-        Write-Host 'Για έξοδο από το πρόγραμμα, απλά αφήστε το κενό και πατήστε [ENTER].' -ForegroundColor DarkGray
+        if ($EmbeddedInLauncher) {
+            Write-Host 'Για επιστροφή στο main menu, άφησέ το κενό και πάτησε [ENTER] ή πάτησε ESC.' -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host 'Για έξοδο από το πρόγραμμα, άφησέ το κενό και πάτησε [ENTER] ή γράψε ESC.' -ForegroundColor DarkGray
+        }
         $inputDriver = Read-HostTrimmed -Prompt "$I_Input Εισάγετε όνομα Driver (π.χ. nv, MulttKey)"
     }
 
-    if ([string]::IsNullOrWhiteSpace($inputDriver)) {
-        [Environment]::Exit(0)
+    if ([string]::IsNullOrWhiteSpace($inputDriver) -or (Test-IsEscapeInput -Value $inputDriver)) {
+        break
     }
 
     $searchTerm = Convert-ToDriverToken -Value $inputDriver
@@ -2026,21 +2599,31 @@ while ($true) {
     }
     else {
         Write-Host "`n$I_Warn Βρέθηκαν πολλαπλά αποτελέσματα. Παρακαλώ επιλέξτε τον ΣΩΣΤΟ driver:`n" -ForegroundColor Yellow
+        $candidateItems = @()
         for ($i = 0; $i -lt $candidates.Count; $i++) {
-            Write-Host "  [$($i + 1)] $($candidates[$i])" -ForegroundColor Cyan
+            $candidateItems += [pscustomobject]@{
+                Key = [string]($i + 1)
+                Label = [string]$candidates[$i]
+                Color = 'Cyan'
+                Value = $candidates[$i]
+            }
         }
-        Write-Host '  [0] Ακύρωση' -ForegroundColor Red
+        $candidateItems += [pscustomobject]@{ Key = '0'; Label = 'Ακύρωση'; Color = 'Red'; Value = '' }
 
-        $selectionText = Read-HostTrimmed -Prompt "`n$I_Input Πληκτρολογήστε τον αριθμό (0-$($candidates.Count))"
-        $selectionNumber = $selectionText -as [int]
-
-        if ($null -eq $selectionNumber -or $selectionNumber -lt 1 -or $selectionNumber -gt $candidates.Count) {
+        $selectedCandidate = Read-SingleChoiceMenu -Items $candidateItems -Prompt "$I_Input Πληκτρολογήστε τον αριθμό (0-$($candidates.Count))" -CancelLabel 'Ακύρωση'
+        if ($null -eq $selectedCandidate) {
             Write-Host "`nΑκύρωση ενέργειας από τον χρήστη." -ForegroundColor Yellow
-            Wait-ActionOrRestart
+            if (-not (Wait-ActionOrRestart)) { break }
             continue
         }
 
-        $exactDriver = $candidates[$selectionNumber - 1]
+        if ([string]::IsNullOrWhiteSpace([string]$selectedCandidate.Value)) {
+            Write-Host "`nΑκύρωση ενέργειας από τον χρήστη." -ForegroundColor Yellow
+            if (-not (Wait-ActionOrRestart)) { break }
+            continue
+        }
+
+        $exactDriver = [string]$selectedCandidate.Value
     }
 
     $evidence = Get-DriverEvidence -ExactDriver $exactDriver -ServiceRegistry $serviceRegistry -DriverPackages $driverPackages
@@ -2055,7 +2638,7 @@ while ($true) {
             Write-Host 'Αν ξέρεις ότι το install/remove έχει ήδη γίνει, το αποτέλεσμα αυτό σημαίνει συνήθως ότι δεν έχει μείνει κάτι από service, package, device ή monitored Windows file paths.' -ForegroundColor DarkGreen
         }
 
-        Wait-ActionOrRestart
+        if (-not (Wait-ActionOrRestart)) { break }
         continue
     }
 
@@ -2068,14 +2651,14 @@ while ($true) {
             Write-Host "    Metadata: $metadataHint" -ForegroundColor Yellow
         }
         Write-Host 'Θα παραμείνει review-only και το script δεν θα επιτρέψει cleanup για αυτό το target.' -ForegroundColor DarkYellow
-        Wait-ActionOrRestart
+        if (-not (Wait-ActionOrRestart)) { break }
         continue
     }
 
     $cleanupTargets = @(Resolve-CleanupTargets -PrimaryEvidence $evidence -ServiceRegistry $serviceRegistry -DriverPackages $driverPackages)
     if ($cleanupTargets.Count -eq 0) {
         Write-Host "`n$I_Warn Ακύρωση cleanup scope." -ForegroundColor Yellow
-        Wait-ActionOrRestart
+        if (-not (Wait-ActionOrRestart)) { break }
         continue
     }
 
@@ -2167,5 +2750,5 @@ while ($true) {
         Write-Host "`n$I_Warn Δεν δόθηκε η λέξη 'YES'. Ακύρωση διαγραφής." -ForegroundColor Yellow
     }
 
-    Wait-ActionOrRestart
+    if (-not (Wait-ActionOrRestart)) { break }
 }

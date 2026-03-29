@@ -2,6 +2,65 @@
 
 Όλες οι notable αλλαγές του project καταγράφονται εδώ.
 
+## 2026-03-28
+
+### Added
+
+- Το `Save-DriverSnapshot.ps1` αποθηκεύει πλέον και `registry-focus.json` με focused registry hits για τα roots `Services`, `Enum`, `Control\Class` και `Uninstall` (`native` + `WOW6432Node`), φιλτραρισμένα μόνο από τα active `FocusTerm` values.
+- Το `Compare-DriverSnapshots.ps1` δείχνει πλέον νέο `Focused Registry` section με ξεχωριστά `KEY` additions/removals και `VALUE` additions/removals/changes, ώστε να φαίνεται καθαρά τι registry residue έβαλε ή άλλαξε ένα install flow.
+
+### Documented
+
+- Το `README.md` ενημερώθηκε ώστε το snapshot/compare workflow να αναφέρει ρητά το νέο focused registry capture και το registry diff output.
+
+## 2026-03-29
+
+### Fixed
+
+- Διορθώθηκε runtime bug στο `Save-DriverSnapshot.ps1`: το νέο focused-registry capture χρησιμοποιούσε `HashSet.ToArray()` μέσα στο `Get-MatchingTerms`, κάτι που έσπαγε σε πραγματικό `PowerShell 7` run με `Method invocation failed`. Πλέον το term set επιστρέφεται με απλό enumerable pipeline και το snapshot μπορεί να συνεχίσει κανονικά.
+
+### Changed
+
+- Το launcher απλοποιήθηκε: το `Current Case` αφαιρέθηκε από το header και το menu, και οι snapshot/cleanup pickers δεν βασίζονται πλέον σε case-priority UX.
+- Το `menu 6` του `DriverCheck.ps1` δεν είναι πλέον redundant `List Snapshots`. Αντικαταστάθηκε με guarded `Delete Snapshot` flow, γιατί τα compare/audit/cleanup pickers ήδη δείχνουν όλο το snapshot inventory όταν το χρειάζεσαι.
+- Το main launcher menu του `DriverCheck.ps1` υποστηρίζει πλέον `Up/Down`, `Enter`, number shortcuts και `ESC`, ώστε να μένει γρήγορο ακόμα κι όταν το tool μεγαλώνει.
+- Το top-level arrow menu του `DriverCheck.ps1` ζωγραφίζει πλέον in-place αντί να ξανακάνει full header redraw σε κάθε keypress, μειώνοντας αισθητά το terminal blink και τα τυχαία cursor flashes.
+- Τα snapshot pickers και το certificate-mode selector του launcher απαιτούν πλέον ρητή επιλογή (`1/2/3...`) ή `ESC`· το blank `Enter` δεν λειτουργεί πια ως implicit cancel στα menu-style prompts.
+- Το `Save Snapshot` και το `Live Driver Check` έγιναν πιο οπτικά συνεπή με το launcher: το save flow ανοίγει κάτω από το ίδιο header, ενώ το live tool υποστηρίζει πλέον embedded launcher-style header mode.
+- Το embedded `Live Driver Check` δεν σκοτώνει πλέον όλο το launcher όταν ο χρήστης πατήσει `ESC` ή blank `ENTER` στο initial prompt. Στο launcher mode αυτά επιστρέφουν πλέον καθαρά στο main menu.
+- Τα interactive menus του `DriverCheck.ps1`, του `DriverCheckWorkbench.ps1`, του `Compare-DriverSnapshots.ps1`, του `Save-DriverSnapshot.ps1`, του `Invoke-DriverCleanupFromSnapshots.ps1` και του `Invoke-DriverLiveCheck.ps1` δέχονται πλέον και πραγματικό `Esc` keypress ως σταθερό cancel/exit path, όχι μόνο blank input, `0` ή το να γράφει ο χρήστης τη λέξη `ESC`.
+- Το `Invoke-DriverLiveCheck.ps1` χειρίζεται πλέον consistent `ESC` cancel σε driver prompt, candidate selection, cleanup scope, selective linked cleanup και continuation menus.
+- Το repo layout έγινε πιο καθαρό για καθημερινή χρήση: το root κρατά πλέον μόνο το `DriverCheck.ps1` ως μοναδικό user-facing PowerShell entry point, ενώ τα υπόλοιπα engine scripts μεταφέρθηκαν στο `internal\`. Το παλιό `driver_check.ps1` μετονομάστηκε σε `Invoke-DriverLiveCheck.ps1`.
+- Το `Compare-DriverSnapshots.ps1` έγινε πιο φιλικό για καθημερινή χρήση: αν δεν δοθούν `-BeforePath` / `-AfterPath`, ανοίγει πλέον numbered snapshot picker από το `snapshots` folder.
+- Το `Compare-DriverSnapshots.ps1` δέχεται πλέον και απλά snapshot folder names αντί για full paths, λύνοντάς τα αυτόματα κάτω από το `SnapshotsRoot`.
+- Το `Save-DriverSnapshot.ps1` ζητά πλέον interactive `Case Name` και `Stage` όταν λείπουν, ώστε να μειώνονται τα generic unlabeled snapshots.
+- Το `Save-DriverSnapshot.ps1` γράφει πλέον human-friendly snapshot folder names όπως `Multi-BeforeInstall 03-29-2026 - 01.45`, με safe collision fallback αντί για άκαμπτο timestamp-prefix naming.
+- Το snapshot picker UI έγινε πιο καθαρό: το `Focus` αφαιρέθηκε από τις compact λίστες του launcher/compare γιατί μπέρδευε περισσότερο απ' όσο βοηθούσε στο pre-compare stage.
+- Τα compare pickers σε `DriverCheck.ps1` και `Compare-DriverSnapshots.ps1` προτιμούν πλέον chronology-friendly σειρά για baseline selection και δείχνουν καθαρό preview/markers για `Base (Before)` και `Compare (After)` πριν τρέξει το diff.
+- Το `Compare-DriverSnapshots.ps1` έγινε πιο άμεσο οπτικά στα diffs: τα `+` additions εμφανίζονται πλέον `Green` και τα `-` removals `Red`.
+- Το `Invoke-DriverCleanupFromSnapshots.ps1` έγινε πλέον uninstaller-aware: όταν το snapshot diff δείχνει νέο official uninstall entry, το cleanup plan τον προτείνει πρώτο ως `Installed Application` action πριν από direct residue cleanup.
+- Το uninstall-entry handling έγινε πιο έξυπνο: `Installed Applications` entries πλέον ταξινομούνται ως `LIKELY`, `REVIEW`, ή `NOISE`, και μόνο τα `LIKELY` μπαίνουν σε auto-cleanup plan.
+- Το `Findings Summary` στο `Invoke-DriverCleanupFromSnapshots.ps1` έγινε πιο scan-friendly: non-zero counts εμφανίζονται πλέον `Green`, ενώ τα `0` μένουν `DarkGray`.
+- Το snapshot/compare flow κρατά πλέον enriched `PnP` device details (`InfName`, `Service`, `DriverInfSection`, `MatchingDeviceId`, `DriverKey`, `ClassGuid`, `DriverVersion`, `DriverDate`) ώστε η σύνδεση `device -> driver stack` να φαίνεται ρητά.
+- Το `Cleanup Plan` δείχνει πλέον `PnP Device` labels μαζί με `InfName` / `Service` όπου υπάρχουν, για πιο καθαρό linking σε cases όπως virtual buses.
+- Το cleanup presentation έγινε πιο guided: προστέθηκε `Recommended Flow` section, grouped phase output, και πιο ρητό wording ότι το `[4] Run Cleanup From Snapshots` μπορεί να τρέξει τον official uninstaller αυτόματα.
+- Διορθώθηκε runtime edge case στο `Invoke-DriverCleanupFromSnapshots.ps1`: το `BCD` diff path τυλίγει πλέον ρητά τα inputs σε arrays ώστε empty/null snapshot sides να μην οδηγούν σε `ReferenceObject is null`.
+- Το `Invoke-DriverCleanupFromSnapshots.ps1` διαβάζει πλέον και το `registry-focus.json` και μπορεί να χτίσει safe targeted `Registry` cleanup actions για leftovers όπως `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\System\<name>`.
+- Το cleanup summary/flow δείχνει πλέον και explicit registry cleanup counts/phase, ώστε `BeforeInstall -> AfterCleanup` residue cases να μη μένουν αόρατα στο `[4] Run Cleanup From Snapshots`.
+- Το `driver_check.ps1` απέκτησε πλέον live `Focused Registry Evidence` section, ώστε το `[5] Live Driver Check` να δείχνει current residue από `Services`, `Enum`, `Control\Class` και `Uninstall` roots αντί να μένει μόνο σε service/package/file evidence.
+- Το live `PnP` output του `driver_check.ps1` δείχνει πλέον και extra binding/context fields όπως `DriverKey`, `ClassGuid`, `Enumerator`, `Parent`, `DriverVersion` και `DriverDate`, ώστε να κουμπώνει καλύτερα με όσα βλέπουμε στα snapshots και στο Device Manager.
+- Διορθώθηκε runtime regression στο νέο live registry path του `driver_check.ps1`: το `FocusedRegistry` evidence πρέπει να μείνει object με `.Keys/.Values` και όχι wrapped array, αλλιώς σκάει στο no-hit path.
+- Το live focused-registry matcher του `driver_check.ps1` έγινε πιο συντηρητικό: broad metadata όπως provider/manufacturer/class GUID/parent/enum fields δεν μπαίνουν πλέον στα registry search terms, ώστε το νέο section να μένει high-signal αντί για massive noise.
+- Διορθώθηκε και δεύτερο live focused-registry noise pattern στο `driver_check.ps1`: structured identifiers όπως `ROOT\SYSTEM\0001` δεν tokenized πλέον σε generic leafs όπως `0001`, ώστε να μη γεμίζει το output με άσχετα `Control\Class\...\0001` hits.
+- Το `DriverQuery` section του `driver_check.ps1` έγινε πιο καθαρό: χρησιμοποιεί πλέον parsed `driverquery /v /fo csv` output και δείχνει compact structured fields αντί για raw wrapped line dump, με wording που ξεχωρίζει `active` από απλό `entry found`.
+- Το `Delete Snapshot` flow του launcher κάνει path verification μέσα στο configured `snapshots` root, αλλά το confirm απλοποιήθηκε σε `ENTER = delete / ESC = cancel` αντί για typed `DELETE`.
+
+### Added
+
+- Προστέθηκε νέο `DriverCheck.ps1` ως central launcher / main entry point του repo. Από εκεί μπορείς να τρέξεις `Save Snapshot`, `Compare Snapshots`, `Audit Cleanup From Snapshots`, `Run Cleanup From Snapshots` και `Live Driver Check` χωρίς να θυμάσαι τα επιμέρους script names.
+- Το `Save-DriverSnapshot.ps1` αποθηκεύει πλέον και `uninstall-entries.json` με structured machine uninstall entries από `HKLM\...\Uninstall` και `WOW6432Node\...\Uninstall`.
+- Το `Compare-DriverSnapshots.ps1` δείχνει πλέον νέο `Installed Applications` section με added/removed/changed uninstall entries και hints από `QuietUninstallString` / `UninstallString`.
+
 ## 2026-03-25
 
 ### Changed

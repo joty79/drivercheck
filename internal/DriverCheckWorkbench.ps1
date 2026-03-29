@@ -123,7 +123,7 @@ function Write-AccentRule {
 
 function Pause-Workbench {
     Write-Host ''
-    Read-Host 'Πατήστε ENTER για επιστροφή στο menu' | Out-Null
+    $null = Read-HostTrimmed -Prompt 'Πατήστε ENTER για επιστροφή στο menu ή γράψε ESC για ακύρωση'
 }
 
 function Read-HostTrimmed {
@@ -132,6 +132,38 @@ function Read-HostTrimmed {
     )
 
     try {
+        if (-not [Console]::IsInputRedirected) {
+            $displayPrompt = if ([string]::IsNullOrWhiteSpace($Prompt)) { '' } else { "${Prompt}: " }
+            Write-Host -NoNewline $displayPrompt
+
+            $buffer = [System.Text.StringBuilder]::new()
+            while ($true) {
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'Enter' {
+                        Write-Host ''
+                        return $buffer.ToString().Trim()
+                    }
+                    'Escape' {
+                        Write-Host ''
+                        return ([string][char]27)
+                    }
+                    'Backspace' {
+                        if ($buffer.Length -gt 0) {
+                            [void]$buffer.Remove($buffer.Length - 1, 1)
+                            Write-Host -NoNewline "`b `b"
+                        }
+                    }
+                    default {
+                        if (-not [char]::IsControl($key.KeyChar)) {
+                            [void]$buffer.Append($key.KeyChar)
+                            Write-Host -NoNewline $key.KeyChar
+                        }
+                    }
+                }
+            }
+        }
+
         $value = Read-Host $Prompt
     }
     catch {
@@ -143,6 +175,24 @@ function Read-HostTrimmed {
     }
 
     return ([string]$value).Trim()
+}
+
+function Test-IsEscapeInput {
+    param(
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    $raw = [string]$Value
+    if ($raw.Length -eq 1 -and [int][char]$raw[0] -eq 27) {
+        return $true
+    }
+
+    return $raw.Trim() -match '^(?i:esc|escape)$'
 }
 
 function Get-OptionalObjectProperty {
@@ -247,27 +297,106 @@ function Select-Snapshot {
         [string]$RootPath
     )
 
-    $snapshots = @(Get-SnapshotFolders -RootPath $RootPath -PreferredCaseName $CurrentCaseName)
-    if ($snapshots.Count -eq 0) {
-        Write-Host 'Δεν υπάρχουν snapshots για επιλογή.' -ForegroundColor Yellow
-        return $null
-    }
+    while ($true) {
+        $snapshots = @(Get-SnapshotFolders -RootPath $RootPath -PreferredCaseName $CurrentCaseName)
+        if ($snapshots.Count -eq 0) {
+            Write-Host 'Δεν υπάρχουν snapshots για επιλογή.' -ForegroundColor Yellow
+            return $null
+        }
 
-    Write-Section -Title $Prompt
-    Show-SnapshotList -Snapshots $snapshots -CurrentCaseName $CurrentCaseName
-    Write-Host ''
-    $selection = Read-HostTrimmed -Prompt 'Διάλεξε αριθμό snapshot ή άφησέ το κενό για ακύρωση'
-    if ([string]::IsNullOrWhiteSpace($selection)) {
-        return $null
-    }
+        Write-Section -Title $Prompt
 
-    $index = $selection -as [int]
-    if ($null -eq $index -or $index -lt 1 -or $index -gt $snapshots.Count) {
-        Write-Host 'Μη έγκυρη επιλογή snapshot.' -ForegroundColor Yellow
-        return $null
-    }
+        if ([Console]::IsInputRedirected) {
+            Show-SnapshotList -Snapshots $snapshots -CurrentCaseName $CurrentCaseName
+            Write-Host ''
+            Write-Host '[ESC] Cancel selection' -ForegroundColor DarkGray
 
-    return $snapshots[$index - 1]
+            $selection = Read-HostTrimmed -Prompt 'Διάλεξε αριθμό snapshot'
+            if (Test-IsEscapeInput -Value $selection) {
+                return $null
+            }
+
+            if ([string]::IsNullOrWhiteSpace($selection)) {
+                Write-Host 'Δώσε αριθμό snapshot ή πάτησε ESC για ακύρωση.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
+            }
+
+            $index = $selection -as [int]
+            if ($null -eq $index -or $index -lt 1 -or $index -gt $snapshots.Count) {
+                Write-Host 'Μη έγκυρη επιλογή snapshot.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
+            }
+
+            return $snapshots[$index - 1]
+        }
+
+        $selectedIndex = 0
+        $eraseLine = '{0}[K' -f [char]27
+
+        function Write-SnapshotPickerFrame {
+            [Console]::SetCursorPosition(0, $menuTop)
+            for ($i = 0; $i -lt $snapshots.Count; $i++) {
+                $snapshot = $snapshots[$i]
+                $isSelected = $i -eq $selectedIndex
+                $prefix = if ($isSelected) { '❯' } else { ' ' }
+                $marker = if (-not [string]::IsNullOrWhiteSpace($CurrentCaseName) -and $snapshot.CaseName -eq $CurrentCaseName) { '*' } else { ' ' }
+                $line = "{0}[{1:00}] {2} {3}" -f $prefix, ($i + 1), $marker, $snapshot.Name
+                $color = if ($isSelected) { 'White' } else { 'Cyan' }
+                $caseText = if ([string]::IsNullOrWhiteSpace($snapshot.CaseName)) { 'NoCase' } else { $snapshot.CaseName }
+                $stageText = if ([string]::IsNullOrWhiteSpace($snapshot.Stage)) { 'NoStage' } else { $snapshot.Stage }
+                Write-Host "$line$eraseLine" -ForegroundColor $color
+                Write-Host ("     Case  : {0}$eraseLine" -f $caseText) -ForegroundColor DarkGray
+                Write-Host ("     Stage : {0}$eraseLine" -f $stageText) -ForegroundColor DarkGray
+                Write-Host ("     Time  : {0}$eraseLine" -f $snapshot.Timestamp) -ForegroundColor DarkGray
+            }
+            Write-Host "[UP/DOWN] Move  [ENTER] Select  [1-9] Shortcut  [ESC] Cancel$eraseLine" -ForegroundColor DarkGray
+        }
+
+        [Console]::CursorVisible = $false
+        try {
+            Write-Host ''
+            $menuTop = [Console]::CursorTop
+            while ($true) {
+                Write-SnapshotPickerFrame
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'UpArrow' {
+                        if ($selectedIndex -gt 0) {
+                            $selectedIndex--
+                        }
+                    }
+                    'DownArrow' {
+                        if ($selectedIndex -lt ($snapshots.Count - 1)) {
+                            $selectedIndex++
+                        }
+                    }
+                    'Enter' {
+                        return $snapshots[$selectedIndex]
+                    }
+                    'Escape' {
+                        return $null
+                    }
+                    default {
+                        $typedKey = [string]$key.KeyChar
+                        if ($typedKey -match '^[1-9]$') {
+                            $typedIndex = ([int]$typedKey) - 1
+                            if ($typedIndex -lt $snapshots.Count) {
+                                $selectedIndex = $typedIndex
+                                Write-SnapshotPickerFrame
+                                Start-Sleep -Milliseconds 90
+                                return $snapshots[$selectedIndex]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        finally {
+            [Console]::CursorVisible = $true
+        }
+    }
 }
 
 function Get-RecommendedHint {
@@ -308,7 +437,7 @@ function Ensure-CaseName {
     }
 
     $value = Read-HostTrimmed -Prompt 'Δώσε Case Name για αυτό το investigation'
-    if ([string]::IsNullOrWhiteSpace($value)) {
+    if ([string]::IsNullOrWhiteSpace($value) -or (Test-IsEscapeInput -Value $value)) {
         Write-Host 'Το Case Name έμεινε κενό. Η ενέργεια ακυρώθηκε.' -ForegroundColor Yellow
         return $false
     }
@@ -357,7 +486,7 @@ function Invoke-CustomSnapshotCapture {
     Write-Section -Title 'Create Custom Snapshot'
     Write-Host 'Πρόταση: Τα standard stages κρατάνε το flow πιο καθαρό. Custom stage μόνο αν όντως το χρειάζεσαι.' -ForegroundColor DarkYellow
     $stage = Read-HostTrimmed -Prompt 'Custom Stage'
-    if ([string]::IsNullOrWhiteSpace($stage)) {
+    if ([string]::IsNullOrWhiteSpace($stage) -or (Test-IsEscapeInput -Value $stage)) {
         Write-Host 'Το Stage έμεινε κενό. Η ενέργεια ακυρώθηκε.' -ForegroundColor Yellow
         Pause-Workbench
         return
@@ -385,30 +514,91 @@ function Invoke-CompareWorkflow {
 }
 
 function Get-CertificateModeSelection {
-    Write-Host ''
-    Write-Host '[1] No certificate cleanup (Recommended)' -ForegroundColor Cyan
-    Write-Host '[2] Include TrustedPublisher cleanup' -ForegroundColor Cyan
-    Write-Host '[3] Include TrustedPublisher and ROOT cleanup (Advanced)' -ForegroundColor Yellow
-    $choice = Read-HostTrimmed -Prompt 'Certificate mode'
+    while ($true) {
+        $items = @(
+            [pscustomobject]@{ Key = '1'; Label = 'No certificate cleanup (Recommended)'; Color = 'Cyan'; Value = @{ IncludeCertificates = $false; IncludeRootCertificates = $false } },
+            [pscustomobject]@{ Key = '2'; Label = 'Include TrustedPublisher cleanup'; Color = 'Cyan'; Value = @{ IncludeCertificates = $true; IncludeRootCertificates = $false } },
+            [pscustomobject]@{ Key = '3'; Label = 'Include TrustedPublisher and ROOT cleanup (Advanced)'; Color = 'Yellow'; Value = @{ IncludeCertificates = $true; IncludeRootCertificates = $true } }
+        )
 
-    switch ($choice) {
-        '2' {
-            return @{
-                IncludeCertificates = $true
-                IncludeRootCertificates = $false
+        if ([Console]::IsInputRedirected) {
+            Write-Host ''
+            foreach ($item in $items) {
+                Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
+            }
+            Write-Host '[ESC] Cancel cleanup flow' -ForegroundColor DarkGray
+            $choice = Read-HostTrimmed -Prompt 'Certificate mode'
+
+            if (Test-IsEscapeInput -Value $choice) {
+                return $null
+            }
+
+            $matchedItem = $items | Where-Object { $_.Key -eq $choice } | Select-Object -First 1
+            if ($null -ne $matchedItem) {
+                return $matchedItem.Value
+            }
+
+            Write-Host 'Δώσε 1, 2, 3 ή πάτησε ESC για ακύρωση.' -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 900
+            continue
+        }
+
+        $selectedIndex = 0
+        $eraseLine = '{0}[K' -f [char]27
+
+        function Write-CertificateMenuFrame {
+            [Console]::SetCursorPosition(0, $menuTop)
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                $item = $items[$i]
+                $isSelected = $i -eq $selectedIndex
+                $prefix = if ($isSelected) { '❯' } else { ' ' }
+                $line = "{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label
+                $color = if ($isSelected) { 'White' } else { $item.Color }
+                Write-Host "$line$eraseLine" -ForegroundColor $color
+            }
+            Write-Host "[UP/DOWN] Move  [ENTER] Select  [1-3] Shortcut  [ESC] Cancel$eraseLine" -ForegroundColor DarkGray
+        }
+
+        [Console]::CursorVisible = $false
+        try {
+            Write-Host ''
+            $menuTop = [Console]::CursorTop
+            while ($true) {
+                Write-CertificateMenuFrame
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'UpArrow' {
+                        if ($selectedIndex -gt 0) {
+                            $selectedIndex--
+                        }
+                    }
+                    'DownArrow' {
+                        if ($selectedIndex -lt ($items.Count - 1)) {
+                            $selectedIndex++
+                        }
+                    }
+                    'Enter' {
+                        return $items[$selectedIndex].Value
+                    }
+                    'Escape' {
+                        return $null
+                    }
+                    default {
+                        $typedKey = [string]$key.KeyChar
+                        for ($i = 0; $i -lt $items.Count; $i++) {
+                            if ($items[$i].Key -eq $typedKey) {
+                                $selectedIndex = $i
+                                Write-CertificateMenuFrame
+                                Start-Sleep -Milliseconds 90
+                                return $items[$selectedIndex].Value
+                            }
+                        }
+                    }
+                }
             }
         }
-        '3' {
-            return @{
-                IncludeCertificates = $true
-                IncludeRootCertificates = $true
-            }
-        }
-        default {
-            return @{
-                IncludeCertificates = $false
-                IncludeRootCertificates = $false
-            }
+        finally {
+            [Console]::CursorVisible = $true
         }
     }
 }
@@ -433,6 +623,11 @@ function Invoke-CleanupWorkflow {
     Write-Section -Title 'Cleanup Options'
     Write-Host 'Πρόταση: Χρησιμοποίησε snapshots που πάρθηκαν όσο πιο κοντά γίνεται στο install για λιγότερο noise.' -ForegroundColor DarkYellow
     $certMode = Get-CertificateModeSelection
+    if ($null -eq $certMode) {
+        Write-Host 'Ακύρωση cleanup flow από τον χρήστη.' -ForegroundColor Yellow
+        Pause-Workbench
+        return
+    }
 
     $invokeParams = @{
         BeforePath = $beforeSnapshot.FullName
@@ -456,7 +651,7 @@ function Invoke-CleanupWorkflow {
 }
 
 function Invoke-LegacyDriverCheck {
-    & (Join-Path $PSScriptRoot 'driver_check.ps1')
+    & (Join-Path $PSScriptRoot 'Invoke-DriverLiveCheck.ps1')
 }
 
 function Write-InfoLine {
@@ -570,11 +765,17 @@ while ($true) {
     Show-Header -Snapshots $snapshots
 
     $choice = Read-HostTrimmed -Prompt 'Choose an option'
+    if (Test-IsEscapeInput -Value $choice) {
+        return
+    }
 
     switch ($choice) {
         '1' {
             $value = Read-HostTrimmed -Prompt 'Case Name'
-            if (-not [string]::IsNullOrWhiteSpace($value)) {
+            if (Test-IsEscapeInput -Value $value) {
+                Write-Host 'Ακύρωση αλλαγής Case Name.' -ForegroundColor Yellow
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($value)) {
                 $script:CurrentCaseName = $value
             }
         }

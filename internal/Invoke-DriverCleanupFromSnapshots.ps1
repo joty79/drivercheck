@@ -106,6 +106,57 @@ function Convert-ToArray {
     return @($InputObject)
 }
 
+function Read-HostTrimmed {
+    param(
+        [string]$Prompt
+    )
+
+    try {
+        if (-not [Console]::IsInputRedirected) {
+            $displayPrompt = if ([string]::IsNullOrWhiteSpace($Prompt)) { '' } else { "${Prompt}: " }
+            Write-Host -NoNewline $displayPrompt
+
+            $buffer = [System.Text.StringBuilder]::new()
+            while ($true) {
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'Enter' {
+                        Write-Host ''
+                        return $buffer.ToString().Trim()
+                    }
+                    'Escape' {
+                        Write-Host ''
+                        return ([string][char]27)
+                    }
+                    'Backspace' {
+                        if ($buffer.Length -gt 0) {
+                            [void]$buffer.Remove($buffer.Length - 1, 1)
+                            Write-Host -NoNewline "`b `b"
+                        }
+                    }
+                    default {
+                        if (-not [char]::IsControl($key.KeyChar)) {
+                            [void]$buffer.Append($key.KeyChar)
+                            Write-Host -NoNewline $key.KeyChar
+                        }
+                    }
+                }
+            }
+        }
+
+        $value = Read-Host $Prompt
+    }
+    catch {
+        return ''
+    }
+
+    if ($null -eq $value) {
+        return ''
+    }
+
+    return ([string]$value).Trim()
+}
+
 function Get-MapByProperty {
     param(
         [object[]]$Items,
@@ -123,6 +174,71 @@ function Get-MapByProperty {
     }
 
     return $map
+}
+
+function Get-OptionalObjectProperty {
+    param(
+        [object]$InputObject,
+        [string]$PropertyName,
+        [object]$DefaultValue = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $DefaultValue
+    }
+
+    $property = $InputObject.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        return $DefaultValue
+    }
+
+    return $property.Value
+}
+
+function Expand-RegistryFocusData {
+    param(
+        [object]$RegistryData
+    )
+
+    if ($null -eq $RegistryData) {
+        return [pscustomobject]@{
+            Keys = @()
+            Values = @()
+        }
+    }
+
+    $keys = foreach ($item in (Convert-ToArray $RegistryData.Keys)) {
+        [pscustomobject]@{
+            Identity = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'Identity' -DefaultValue '')
+            RootName = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'RootName' -DefaultValue '')
+            KeyPath = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'KeyPath' -DefaultValue '')
+            MatchedTerms = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'MatchedTerms' -DefaultValue '')
+            MatchSource = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'MatchSource' -DefaultValue '')
+        }
+    }
+
+    $values = foreach ($item in (Convert-ToArray $RegistryData.Values)) {
+        $identity = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'Identity' -DefaultValue '')
+        if ([string]::IsNullOrWhiteSpace($identity)) {
+            $identity = ('{0}::{1}' -f ([string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'KeyPath' -DefaultValue '')), ([string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'ValueName' -DefaultValue '')))
+        }
+
+        [pscustomobject]@{
+            Identity = $identity
+            RootName = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'RootName' -DefaultValue '')
+            KeyPath = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'KeyPath' -DefaultValue '')
+            ValueName = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'ValueName' -DefaultValue '')
+            ValueKind = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'ValueKind' -DefaultValue '')
+            ValueData = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'ValueData' -DefaultValue '')
+            MatchedTerms = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'MatchedTerms' -DefaultValue '')
+            MatchSource = [string](Get-OptionalObjectProperty -InputObject $item -PropertyName 'MatchSource' -DefaultValue '')
+        }
+    }
+
+    return [pscustomobject]@{
+        Keys = @($keys | Sort-Object KeyPath)
+        Values = @($values | Sort-Object Identity)
+    }
 }
 
 function Compare-NamedObjects {
@@ -342,6 +458,74 @@ function Get-CertificateSnapshot {
     return @($certs | Sort-Object Thumbprint)
 }
 
+function Get-UninstallEntrySnapshot {
+    function Get-PropertyValue {
+        param(
+            [object]$InputObject,
+            [string]$PropertyName,
+            [object]$DefaultValue = $null
+        )
+
+        if ($null -eq $InputObject) {
+            return $DefaultValue
+        }
+
+        $property = $InputObject.PSObject.Properties[$PropertyName]
+        if ($null -eq $property) {
+            return $DefaultValue
+        }
+
+        return $property.Value
+    }
+
+    $roots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
+
+    $entries = foreach ($rootPath in $roots) {
+        foreach ($entryKey in Get-ChildItem -LiteralPath $rootPath -ErrorAction SilentlyContinue) {
+            try {
+                $item = Get-ItemProperty -LiteralPath $entryKey.PSPath -ErrorAction Stop
+            }
+            catch {
+                continue
+            }
+
+            $displayName = [string](Get-PropertyValue -InputObject $item -PropertyName 'DisplayName' -DefaultValue '')
+            $uninstallString = [string](Get-PropertyValue -InputObject $item -PropertyName 'UninstallString' -DefaultValue '')
+            $quietUninstallString = [string](Get-PropertyValue -InputObject $item -PropertyName 'QuietUninstallString' -DefaultValue '')
+            $productCode = if ($entryKey.PSChildName -match '^\{[0-9A-Fa-f\-]+\}$') { $entryKey.PSChildName } else { '' }
+
+            if (
+                [string]::IsNullOrWhiteSpace($displayName) -and
+                [string]::IsNullOrWhiteSpace($uninstallString) -and
+                [string]::IsNullOrWhiteSpace($quietUninstallString)
+            ) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Identity = $entryKey.Name
+                RegistryKeyPath = $entryKey.Name
+                RootPath = $rootPath
+                KeyName = $entryKey.PSChildName
+                ProductCode = $productCode
+                DisplayName = $displayName
+                DisplayVersion = [string](Get-PropertyValue -InputObject $item -PropertyName 'DisplayVersion' -DefaultValue '')
+                Publisher = [string](Get-PropertyValue -InputObject $item -PropertyName 'Publisher' -DefaultValue '')
+                InstallLocation = [string](Get-PropertyValue -InputObject $item -PropertyName 'InstallLocation' -DefaultValue '')
+                InstallSource = [string](Get-PropertyValue -InputObject $item -PropertyName 'InstallSource' -DefaultValue '')
+                UninstallString = $uninstallString
+                QuietUninstallString = $quietUninstallString
+                WindowsInstaller = [int](Get-PropertyValue -InputObject $item -PropertyName 'WindowsInstaller' -DefaultValue 0)
+            }
+        }
+    }
+
+    return @($entries | Sort-Object DisplayName, DisplayVersion, RegistryKeyPath)
+}
+
 function Should-IgnoreDevice {
     param(
         [object]$Device
@@ -393,6 +577,72 @@ function Should-ManageFileDirectly {
         $fullPath.Equals($systemDriversRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
         $fullPath.StartsWith($systemDriversPrefix, [System.StringComparison]::OrdinalIgnoreCase)
     ) {
+        return $true
+    }
+
+    return $false
+}
+
+function Convert-RegistryKeyPathToProviderPath {
+    param(
+        [string]$KeyPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($KeyPath)) {
+        return ''
+    }
+
+    if ($KeyPath -match '^(HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKEY_CLASSES_ROOT|HKEY_USERS|HKEY_CURRENT_CONFIG)\\') {
+        return "Registry::$KeyPath"
+    }
+
+    return $KeyPath
+}
+
+function Test-RegistryKeyPresent {
+    param(
+        [string]$KeyPath
+    )
+
+    $providerPath = Convert-RegistryKeyPathToProviderPath -KeyPath $KeyPath
+    if ([string]::IsNullOrWhiteSpace($providerPath)) {
+        return $false
+    }
+
+    return (Test-Path -LiteralPath $providerPath)
+}
+
+function Test-RegistryValuePresent {
+    param(
+        [string]$KeyPath,
+        [string]$ValueName
+    )
+
+    $providerPath = Convert-RegistryKeyPathToProviderPath -KeyPath $KeyPath
+    if ([string]::IsNullOrWhiteSpace($providerPath) -or -not (Test-Path -LiteralPath $providerPath)) {
+        return $false
+    }
+
+    try {
+        $item = Get-ItemProperty -LiteralPath $providerPath -ErrorAction Stop
+    }
+    catch {
+        return $false
+    }
+
+    return ($null -ne $item.PSObject.Properties[$ValueName])
+}
+
+function Test-SafeRegistryCleanupKey {
+    param(
+        [string]$KeyPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($KeyPath)) {
+        return $false
+    }
+
+    if ($KeyPath -match '^HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\System\\[^\\]+$') {
         return $true
     }
 
@@ -460,6 +710,154 @@ function New-CleanupAction {
     return [pscustomobject]$properties
 }
 
+function Format-UninstallEntryLabel {
+    param(
+        [object]$Entry
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace([string]$Entry.DisplayName)) {
+        $parts.Add([string]$Entry.DisplayName)
+    }
+    else {
+        $parts.Add([string]$Entry.KeyName)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Entry.DisplayVersion)) {
+        $parts.Add([string]$Entry.DisplayVersion)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Entry.Publisher)) {
+        $parts.Add([string]$Entry.Publisher)
+    }
+
+    return ($parts -join ' :: ')
+}
+
+function Format-PnpCleanupLabel {
+    param(
+        [object]$Device
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $friendlyName = [string]$Device.FriendlyName
+    $instanceId = [string]$Device.InstanceId
+
+    if (-not [string]::IsNullOrWhiteSpace($friendlyName)) {
+        if (-not [string]::IsNullOrWhiteSpace($instanceId)) {
+            $parts.Add("$friendlyName [$instanceId]")
+        }
+        else {
+            $parts.Add($friendlyName)
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($instanceId)) {
+        $parts.Add($instanceId)
+    }
+
+    foreach ($value in @(
+            [string](Get-OptionalObjectProperty -InputObject $Device -PropertyName 'InfName' -DefaultValue ''),
+            [string](Get-OptionalObjectProperty -InputObject $Device -PropertyName 'ServiceName' -DefaultValue '')
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $parts.Add($value)
+        }
+    }
+
+    return ($parts -join ' :: ')
+}
+
+function Get-UninstallCommandSpec {
+    param(
+        [object]$Entry
+    )
+
+    $quietCommand = [string]$Entry.QuietUninstallString
+    $normalCommand = [string]$Entry.UninstallString
+    $productCode = [string]$Entry.ProductCode
+
+    if (-not [string]::IsNullOrWhiteSpace($quietCommand)) {
+        return [pscustomobject]@{
+            CommandLine = $quietCommand
+            Preview = $quietCommand
+            Source = 'QuietUninstallString'
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($normalCommand)) {
+        return [pscustomobject]@{
+            CommandLine = $normalCommand
+            Preview = $normalCommand
+            Source = 'UninstallString'
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($productCode)) {
+        $commandLine = "msiexec.exe /x $productCode /qn /norestart"
+        return [pscustomobject]@{
+            CommandLine = $commandLine
+            Preview = $commandLine
+            Source = 'ProductCodeFallback'
+        }
+    }
+
+    return $null
+}
+
+function Get-UninstallEntryClassification {
+    param(
+        [object]$Entry
+    )
+
+    $displayName = [string]$Entry.DisplayName
+    $publisher = [string]$Entry.Publisher
+    $combined = ($displayName + ' ' + $publisher).Trim()
+
+    if ($combined -match '(?i)EdgeWebView|Microsoft Edge WebView') {
+        return 'NOISE'
+    }
+
+    if ($combined -match '(?i)Sentinel|HASP|Thales|Gemalto|Aladdin|MultiKey|SolidCAM|Mastercam') {
+        return 'LIKELY'
+    }
+
+    if ($combined -match '(?i)Visual C\+\+|Redistributable|\.NET|ASP\.NET|Desktop Runtime|Runtime') {
+        return 'REVIEW'
+    }
+
+    if ($publisher -match '(?i)^Microsoft') {
+        return 'REVIEW'
+    }
+
+    return 'REVIEW'
+}
+
+function Expand-UninstallEntries {
+    param(
+        [object[]]$Entries
+    )
+
+    $expanded = foreach ($entry in (Convert-ToArray $Entries)) {
+        [pscustomobject]@{
+            Identity = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'Identity' -DefaultValue '')
+            RegistryKeyPath = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'RegistryKeyPath' -DefaultValue '')
+            RootPath = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'RootPath' -DefaultValue '')
+            KeyName = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'KeyName' -DefaultValue '')
+            ProductCode = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'ProductCode' -DefaultValue '')
+            DisplayName = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'DisplayName' -DefaultValue '')
+            DisplayVersion = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'DisplayVersion' -DefaultValue '')
+            Publisher = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'Publisher' -DefaultValue '')
+            InstallLocation = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'InstallLocation' -DefaultValue '')
+            InstallSource = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'InstallSource' -DefaultValue '')
+            UninstallString = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'UninstallString' -DefaultValue '')
+            QuietUninstallString = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'QuietUninstallString' -DefaultValue '')
+            WindowsInstaller = [string](Get-OptionalObjectProperty -InputObject $entry -PropertyName 'WindowsInstaller' -DefaultValue '')
+        }
+    }
+
+    return @($expanded)
+}
+
 function Get-CurrentBcdActionState {
     param(
         [string[]]$CurrentBcdLines,
@@ -505,12 +903,93 @@ function Get-Choice {
     )
 
     while ($true) {
-        $choice = (Read-Host $Prompt).Trim().ToUpperInvariant()
-        if ($choice -in @('Y', 'YES', 'S', 'SKIP', 'Q', 'QUIT')) {
-            return $choice
+        $choice = Read-HostTrimmed -Prompt $Prompt
+        if ($null -eq $choice) {
+            $choice = ''
         }
 
-        Write-Host 'Παρακαλώ γράψε Y, S ή Q.' -ForegroundColor Yellow
+        $normalizedChoice = ([string]$choice).Trim().ToUpperInvariant()
+        if ($normalizedChoice -in @([string][char]27, 'ESC', 'ESCAPE')) {
+            return 'QUIT'
+        }
+
+        if ($normalizedChoice -in @('Y', 'YES', 'S', 'SKIP', 'Q', 'QUIT')) {
+            return $normalizedChoice
+        }
+
+        Write-Host 'Παρακαλώ γράψε Y, S ή Q. Το ESC ακυρώνει επίσης.' -ForegroundColor Yellow
+    }
+}
+
+function Read-SingleChoiceMenu {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Items,
+        [string]$Prompt = 'Choose an option',
+        [string]$CancelLabel = 'Cancel'
+    )
+
+    function Get-ConsoleSafeLine {
+        param(
+            [string]$Text
+        )
+
+        $rawText = if ($null -eq $Text) { '' } else { [string]$Text }
+        try {
+            $maxWidth = [Math]::Max(20, [Console]::BufferWidth - 1)
+        }
+        catch {
+            $maxWidth = 120
+        }
+
+        if ($rawText.Length -le $maxWidth) {
+            return $rawText
+        }
+
+        return ($rawText.Substring(0, $maxWidth - 3) + '...')
+    }
+
+    foreach ($item in $Items) {
+        Write-Host (Get-ConsoleSafeLine -Text ("[{0}] {1}" -f $item.Key, $item.Label)) -ForegroundColor $item.Color
+    }
+    Write-Host (Get-ConsoleSafeLine -Text ("[ESC] {0}" -f $CancelLabel)) -ForegroundColor DarkGray
+
+    if ([Console]::IsInputRedirected) {
+        $choice = Read-HostTrimmed -Prompt $Prompt
+        if ($null -eq $choice) {
+            return $null
+        }
+
+        $normalizedChoice = ([string]$choice).Trim()
+        if ($normalizedChoice.Length -eq 1 -and [int][char]$normalizedChoice[0] -eq 27) {
+            return $null
+        }
+
+        if ($normalizedChoice -match '^(?i:esc|escape)$') {
+            return $null
+        }
+
+        return ($Items | Where-Object { $_.Key -eq $normalizedChoice } | Select-Object -First 1)
+    }
+
+    Write-Host (Get-ConsoleSafeLine -Text ("[{0}] Press a number key or ESC." -f $Prompt)) -ForegroundColor DarkGray
+    while ($true) {
+        $key = [Console]::ReadKey($true)
+        if ($key.Key -eq [ConsoleKey]::Escape) {
+            Write-Host ''
+            return $null
+        }
+
+        $typedKey = [string]$key.KeyChar
+        if ([string]::IsNullOrWhiteSpace($typedKey)) {
+            continue
+        }
+
+        $matchedItem = $Items | Where-Object { $_.Key -eq $typedKey } | Select-Object -First 1
+        if ($null -ne $matchedItem) {
+            Write-Host $typedKey
+            return $matchedItem
+        }
     }
 }
 
@@ -524,6 +1003,16 @@ function Write-Section {
     Write-Host ('-' * $Title.Length) -ForegroundColor Cyan
 }
 
+function Write-SummaryCount {
+    param(
+        [string]$Label,
+        [int]$Count
+    )
+
+    $color = if ($Count -gt 0) { 'Green' } else { 'DarkGray' }
+    Write-Host ("{0,-22}: {1}" -f $Label, $Count) -ForegroundColor $color
+}
+
 function Write-ActionList {
     param(
         [object[]]$Actions
@@ -534,14 +1023,76 @@ function Write-ActionList {
         return
     }
 
-    $index = 0
-    foreach ($action in $Actions | Sort-Object Order, Category, Label) {
-        $index++
-        $color = if ($action.CurrentState -eq 'Pending') { 'Yellow' } else { 'Green' }
-        Write-Host ("[{0:00}] [{1}] {2}" -f $index, $action.CurrentState, $action.Label) -ForegroundColor $color
-        Write-Host "     Category : $($action.Category)" -ForegroundColor DarkGray
-        Write-Host "     Command  : $($action.CommandPreview)" -ForegroundColor DarkGray
+    $groupTitles = @{
+        'Installed Application' = 'Phase 1: Official Uninstall'
+        'PnP Device' = 'Phase 2: Remove Devices'
+        'Service' = 'Phase 3: Remove Services'
+        'Driver Package' = 'Phase 4: Remove Driver Packages'
+        'Registry' = 'Phase 5: Remove Registry Leftovers'
+        'File' = 'Phase 6: Remove Direct Leftovers'
+        'Certificate' = 'Phase 7: Certificate Cleanup'
+        'BCD' = 'Phase 8: Boot Configuration Cleanup'
     }
+
+    $groupOrder = @{
+        'Installed Application' = 10
+        'PnP Device' = 20
+        'Service' = 30
+        'Driver Package' = 40
+        'Registry' = 50
+        'File' = 60
+        'Certificate' = 70
+        'BCD' = 80
+    }
+
+    $index = 0
+    $groupedActions = $Actions |
+        Sort-Object Order, Category, Label |
+        Group-Object Category |
+        Sort-Object @{ Expression = { if ($groupOrder.ContainsKey($_.Name)) { $groupOrder[$_.Name] } else { 999 } }; Ascending = $true }, Name
+    foreach ($group in $groupedActions) {
+        $phaseTitle = if ($groupTitles.ContainsKey($group.Name)) { $groupTitles[$group.Name] } else { $group.Name }
+        Write-Host ''
+        Write-Host $phaseTitle -ForegroundColor Cyan
+        Write-Host ('~' * $phaseTitle.Length) -ForegroundColor Cyan
+
+        foreach ($action in $group.Group) {
+            $index++
+            $color = if ($action.CurrentState -eq 'Pending') { 'Yellow' } else { 'Green' }
+            Write-Host ("[{0:00}] [{1}] {2}" -f $index, $action.CurrentState, $action.Label) -ForegroundColor $color
+            Write-Host "     Category : $($action.Category)" -ForegroundColor DarkGray
+            if ($action.Category -eq 'Installed Application') {
+                Write-Host "     Why first : Prefer the software's own uninstaller before residue cleanup." -ForegroundColor DarkGray
+            }
+            Write-Host "     Command  : $($action.CommandPreview)" -ForegroundColor DarkGray
+        }
+    }
+}
+
+function Write-RecommendedFlow {
+    param(
+        [int]$PendingUninstallerCount,
+        [int]$PendingResidueCount
+    )
+
+    Write-Section -Title 'Recommended Flow'
+
+    if ($PendingUninstallerCount -gt 0) {
+        Write-Host '1. Run the official uninstaller first.' -ForegroundColor Green
+        Write-Host '   Το [4] Run Cleanup From Snapshots μπορεί να το τρέξει αυτόματα από το script.' -ForegroundColor DarkGray
+        Write-Host '2. Continue with the remaining device/service/package/file cleanup actions.' -ForegroundColor Green
+        Write-Host '3. Take a fresh AfterCleanup snapshot and compare again for leftovers.' -ForegroundColor Green
+        return
+    }
+
+    if ($PendingResidueCount -gt 0) {
+        Write-Host '1. No official uninstaller is pending, so continue with residue cleanup.' -ForegroundColor Green
+        Write-Host '2. Remove devices, services, packages, registry leftovers, and direct files in the shown phase order.' -ForegroundColor Green
+        Write-Host '3. Take a fresh AfterCleanup snapshot and compare again for leftovers.' -ForegroundColor Green
+        return
+    }
+
+    Write-Host 'No pending cleanup flow remains in the current system state.' -ForegroundColor Green
 }
 
 function Invoke-CleanupAction {
@@ -568,6 +1119,17 @@ function Invoke-CleanupAction {
             }
         }
 
+        'RunUninstaller' {
+            $process = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/c', $Action.CommandLine) -Wait -PassThru -WindowStyle Hidden
+            return [pscustomobject]@{
+                Success = ($null -ne $process -and $process.ExitCode -eq 0)
+                Output = @(
+                    "Executed $($Action.CommandSource): $($Action.CommandLine)",
+                    "ExitCode: $($process.ExitCode)"
+                )
+            }
+        }
+
         'DeleteDriverPackage' {
             $result = Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/delete-driver', $Action.PublishedName, '/uninstall', '/force')
             $success = ($result.ExitCode -eq 0)
@@ -590,6 +1152,30 @@ function Invoke-CleanupAction {
                 return [pscustomobject]@{
                     Success = $true
                     Output = @("Removed: $($Action.FilePath)")
+                }
+            }
+            catch {
+                return [pscustomobject]@{
+                    Success = $false
+                    Output = @($_.Exception.Message)
+                }
+            }
+        }
+
+        'RemoveRegistryKey' {
+            $providerPath = Convert-RegistryKeyPathToProviderPath -KeyPath $Action.RegistryKeyPath
+            if (-not (Test-Path -LiteralPath $providerPath)) {
+                return [pscustomobject]@{
+                    Success = $true
+                    Output = @("Registry key is already absent: $($Action.RegistryKeyPath)")
+                }
+            }
+
+            try {
+                Remove-Item -LiteralPath $providerPath -Recurse -Force -ErrorAction Stop
+                return [pscustomobject]@{
+                    Success = $true
+                    Output = @("Removed registry key: $($Action.RegistryKeyPath)")
                 }
             }
             catch {
@@ -669,17 +1255,31 @@ $beforeRootCerts = Convert-ToArray (Read-JsonFile -Path (Join-Path $BeforePath '
 $afterRootCerts = Convert-ToArray (Read-JsonFile -Path (Join-Path $AfterPath 'cert-root.json'))
 $beforePublisherCerts = Convert-ToArray (Read-JsonFile -Path (Join-Path $BeforePath 'cert-trustedpublisher.json'))
 $afterPublisherCerts = Convert-ToArray (Read-JsonFile -Path (Join-Path $AfterPath 'cert-trustedpublisher.json'))
+$beforeRegistryFocus = Expand-RegistryFocusData -RegistryData (Read-JsonFile -Path (Join-Path $BeforePath 'registry-focus.json'))
+$afterRegistryFocus = Expand-RegistryFocusData -RegistryData (Read-JsonFile -Path (Join-Path $AfterPath 'registry-focus.json'))
 $beforeFiles = Convert-ToArray (Read-JsonFile -Path (Join-Path $BeforePath 'focus-files.json'))
 $afterFiles = Convert-ToArray (Read-JsonFile -Path (Join-Path $AfterPath 'focus-files.json'))
+$beforeUninstallEntries = Expand-UninstallEntries -Entries (Convert-ToArray (Read-JsonFile -Path (Join-Path $BeforePath 'uninstall-entries.json')))
+$afterUninstallEntries = Expand-UninstallEntries -Entries (Convert-ToArray (Read-JsonFile -Path (Join-Path $AfterPath 'uninstall-entries.json')))
 
 $packageDiff = Compare-NamedObjects -BeforeItems $beforePackages -AfterItems $afterPackages -KeyProperty 'PublishedName' -CompareProperties @('OriginalName', 'ProviderName', 'DriverVersion', 'SignerName')
 $serviceDiff = Compare-NamedObjects -BeforeItems $beforeServices -AfterItems $afterServices -KeyProperty 'Name' -CompareProperties @('DisplayName', 'ImagePath', 'Start', 'Type', 'ErrorControl', 'Group')
 $deviceDiff = Compare-NamedObjects -BeforeItems $beforeDevices -AfterItems $afterDevices -KeyProperty 'InstanceId' -CompareProperties @('Class', 'FriendlyName', 'Present', 'Problem', 'Status')
 $rootCertDiff = Compare-NamedObjects -BeforeItems $beforeRootCerts -AfterItems $afterRootCerts -KeyProperty 'Thumbprint' -CompareProperties @('Subject', 'Issuer', 'NotAfter')
 $publisherCertDiff = Compare-NamedObjects -BeforeItems $beforePublisherCerts -AfterItems $afterPublisherCerts -KeyProperty 'Thumbprint' -CompareProperties @('Subject', 'Issuer', 'NotAfter')
+$registryKeyDiff = Compare-NamedObjects -BeforeItems $beforeRegistryFocus.Keys -AfterItems $afterRegistryFocus.Keys -KeyProperty 'Identity' -CompareProperties @()
+$registryValueDiff = Compare-NamedObjects -BeforeItems $beforeRegistryFocus.Values -AfterItems $afterRegistryFocus.Values -KeyProperty 'Identity' -CompareProperties @('RootName', 'KeyPath', 'ValueName', 'ValueKind', 'ValueData')
 $fileDiff = Compare-NamedObjects -BeforeItems $beforeFiles -AfterItems $afterFiles -KeyProperty 'FullName' -CompareProperties @('Length', 'Sha256', 'LastWriteTime')
+$uninstallEntryDiff = Compare-NamedObjects -BeforeItems $beforeUninstallEntries -AfterItems $afterUninstallEntries -KeyProperty 'Identity' -CompareProperties @('DisplayName', 'DisplayVersion', 'Publisher', 'InstallLocation', 'InstallSource', 'UninstallString', 'QuietUninstallString', 'WindowsInstaller', 'ProductCode')
 $directFileCandidates = @($fileDiff.Added | Where-Object { Should-ManageFileDirectly -Path $_.FullName })
 $deferredFileCandidates = @($fileDiff.Added | Where-Object { -not (Should-ManageFileDirectly -Path $_.FullName) })
+$safeRegistryKeyCandidates = @($registryKeyDiff.Added | Where-Object { Test-SafeRegistryCleanupKey -KeyPath $_.KeyPath })
+$safeRegistryValueCandidates = @(
+    $registryValueDiff.Added | Where-Object {
+        (Test-SafeRegistryCleanupKey -KeyPath $_.KeyPath) -and
+        ($safeRegistryKeyCandidates.KeyPath -notcontains $_.KeyPath)
+    }
+)
 $rootAddedCerts = @($rootCertDiff.Added)
 $publisherAddedThumbprints = Get-CertThumbprintSet -Items $publisherCertDiff.Added
 $relevantRootCerts = @()
@@ -701,7 +1301,7 @@ $publisherDiffThumbprints = Get-CertThumbprintSet -Items $relevantPublisherCerts
 
 $beforeBcd = Get-BcdRelevantLinesFromPath -Path (Join-Path $BeforePath 'bcdedit.enum.all.txt')
 $afterBcd = Get-BcdRelevantLinesFromPath -Path (Join-Path $AfterPath 'bcdedit.enum.all.txt')
-$bcdAdded = @(Compare-Object -ReferenceObject $beforeBcd -DifferenceObject $afterBcd -PassThru | Where-Object { $_.SideIndicator -eq '=>' })
+$bcdAdded = @(Compare-Object -ReferenceObject @($beforeBcd) -DifferenceObject @($afterBcd) -PassThru | Where-Object { $_.SideIndicator -eq '=>' })
 
 $currentPackages = Convert-PnpUtilToDriverPackages -Lines (Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/enum-drivers')).Output
 $currentPackageMap = Get-MapByProperty -Items $currentPackages -PropertyName 'PublishedName'
@@ -713,6 +1313,8 @@ $currentRootCerts = Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\Root'
 $currentRootCertMap = Get-MapByProperty -Items $currentRootCerts -PropertyName 'Thumbprint'
 $currentPublisherCerts = Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\TrustedPublisher'
 $currentPublisherCertMap = Get-MapByProperty -Items $currentPublisherCerts -PropertyName 'Thumbprint'
+$currentUninstallEntries = Get-UninstallEntrySnapshot
+$currentUninstallEntryMap = Get-MapByProperty -Items $currentUninstallEntries -PropertyName 'Identity'
 $currentBcdLines = Get-BcdRelevantLinesFromLines -Lines (Invoke-NativeCapture -FilePath 'bcdedit.exe' -Arguments @('/enum', 'all')).Output
 $currentRelevantRootCerts = @($relevantRootCerts | Where-Object { $currentRootCertMap.ContainsKey([string]$_.Thumbprint) })
 $currentRelevantPublisherCerts = @($relevantPublisherCerts | Where-Object { $currentPublisherCertMap.ContainsKey([string]$_.Thumbprint) })
@@ -736,9 +1338,29 @@ $currentRootOnlyReviewCerts = @(
 
 $actions = New-Object System.Collections.Generic.List[object]
 
+foreach ($entry in $uninstallEntryDiff.Added) {
+    $classification = Get-UninstallEntryClassification -Entry $entry
+    if ($classification -ne 'LIKELY') {
+        continue
+    }
+
+    $commandSpec = Get-UninstallCommandSpec -Entry $entry
+    if ($null -eq $commandSpec) {
+        continue
+    }
+
+    $currentState = if ($currentUninstallEntryMap.ContainsKey([string]$entry.Identity)) { 'Pending' } else { 'Already absent' }
+    $actions.Add((New-CleanupAction -Order 5 -Kind 'RunUninstaller' -Category 'Installed Application' -Label "[LIKELY] $(Format-UninstallEntryLabel -Entry $entry)" -Target ([string]$entry.Identity) -CommandPreview $commandSpec.Preview -CurrentState $currentState -Reason 'Official uninstall entry was added after install and should run before direct residue cleanup.' -Extra @{
+                Identity = [string]$entry.Identity
+                CommandLine = [string]$commandSpec.CommandLine
+                CommandSource = [string]$commandSpec.Source
+                Classification = $classification
+            }))
+}
+
 foreach ($device in @($deviceDiff.Added | Where-Object { -not (Should-IgnoreDevice -Device $_) })) {
     $currentState = if ($currentDeviceMap.ContainsKey($device.InstanceId)) { 'Pending' } else { 'Already absent' }
-    $actions.Add((New-CleanupAction -Order 10 -Kind 'RemovePnpDevice' -Category 'PnP Device' -Label "$($device.FriendlyName) [$($device.InstanceId)]" -Target $device.InstanceId -CommandPreview "pnputil /remove-device `"$($device.InstanceId)`"" -CurrentState $currentState -Reason 'Present in After snapshot but not in Before snapshot.' -Extra @{
+    $actions.Add((New-CleanupAction -Order 10 -Kind 'RemovePnpDevice' -Category 'PnP Device' -Label (Format-PnpCleanupLabel -Device $device) -Target $device.InstanceId -CommandPreview "pnputil /remove-device `"$($device.InstanceId)`"" -CurrentState $currentState -Reason 'Present in After snapshot but not in Before snapshot.' -Extra @{
                 InstanceId = $device.InstanceId
             }))
 }
@@ -761,6 +1383,13 @@ foreach ($file in $directFileCandidates) {
     $currentState = if (Test-Path $file.FullName) { 'Pending' } else { 'Already absent' }
     $actions.Add((New-CleanupAction -Order 40 -Kind 'RemoveFile' -Category 'File' -Label $file.FullName -Target $file.FullName -CommandPreview "Remove-Item -LiteralPath '$($file.FullName)' -Force" -CurrentState $currentState -Reason 'Focused file was added after install.' -Extra @{
                 FilePath = $file.FullName
+            }))
+}
+
+foreach ($registryKey in $safeRegistryKeyCandidates) {
+    $currentState = if (Test-RegistryKeyPresent -KeyPath $registryKey.KeyPath) { 'Pending' } else { 'Already absent' }
+    $actions.Add((New-CleanupAction -Order 45 -Kind 'RemoveRegistryKey' -Category 'Registry' -Label $registryKey.KeyPath -Target $registryKey.KeyPath -CommandPreview "Remove-Item -LiteralPath '$(Convert-RegistryKeyPathToProviderPath -KeyPath $registryKey.KeyPath)' -Recurse -Force" -CurrentState $currentState -Reason 'Safe focused registry leftover remained after cleanup.' -Extra @{
+                RegistryKeyPath = $registryKey.KeyPath
             }))
 }
 
@@ -819,11 +1448,16 @@ if (@($bcdAdded | Where-Object { $_ -match '(?i)^\s*bootdebug\s+(yes|on)\s*$' })
 
 $sortedActions = @($actions | Sort-Object Order, Category, Label)
 $pendingActions = @($sortedActions | Where-Object { $_.CurrentState -eq 'Pending' })
+$pendingUninstallCount = @($pendingActions | Where-Object { $_.Category -eq 'Installed Application' }).Count
+$likelyUninstallEntries = @($uninstallEntryDiff.Added | Where-Object { (Get-UninstallEntryClassification -Entry $_) -eq 'LIKELY' })
+$reviewUninstallEntries = @($uninstallEntryDiff.Added | Where-Object { (Get-UninstallEntryClassification -Entry $_) -eq 'REVIEW' })
+$noiseUninstallEntries = @($uninstallEntryDiff.Added | Where-Object { (Get-UninstallEntryClassification -Entry $_) -eq 'NOISE' })
 $addedDeviceCount = @($deviceDiff.Added | Where-Object { -not (Should-IgnoreDevice -Device $_) }).Count
 $pendingDeviceCount = @($pendingActions | Where-Object { $_.Category -eq 'PnP Device' }).Count
 $pendingServiceCount = @($pendingActions | Where-Object { $_.Category -eq 'Service' }).Count
 $pendingPackageCount = @($pendingActions | Where-Object { $_.Category -eq 'Driver Package' }).Count
 $pendingFileCount = @($pendingActions | Where-Object { $_.Category -eq 'File' }).Count
+$pendingRegistryCount = @($pendingActions | Where-Object { $_.Category -eq 'Registry' }).Count
 $pendingBcdCount = @($pendingActions | Where-Object { $_.Category -eq 'BCD' }).Count
 $pendingCertificateCount = @($pendingActions | Where-Object { $_.Category -eq 'Certificate' }).Count
 
@@ -832,31 +1466,37 @@ Write-Host 'Snapshot-Driven Driver Cleanup' -ForegroundColor Green
 Write-Host '------------------------------' -ForegroundColor Green
 Write-Host "Before snapshot : $BeforePath"
 Write-Host "After snapshot  : $AfterPath"
-if ($afterMetadata) {
-    Write-Host "Focus terms     : $((@($afterMetadata.FocusTerm)) -join ', ')"
-}
 Write-Host "Certificate mode: $(if ($IncludeCertificates) { 'Enabled' } else { 'Audit only / skip removal' })"
 Write-Host "Root cert auto-actions: $(if ($IncludeRootCertificates) { 'Enabled' } else { 'Review only' })"
 
 Write-Section -Title 'Findings Summary'
-Write-Host "Added driver packages : $($packageDiff.Added.Count)"
-Write-Host "Pending packages now  : $pendingPackageCount"
-Write-Host "Added services        : $($serviceDiff.Added.Count)"
-Write-Host "Pending services now  : $pendingServiceCount"
-Write-Host "Added PnP devices     : $addedDeviceCount"
-Write-Host "Pending devices now   : $pendingDeviceCount"
-Write-Host "Added focused files   : $($fileDiff.Added.Count)"
-Write-Host "Pending file removals : $pendingFileCount"
-Write-Host "Direct file evidence  : $($directFileCandidates.Count)"
-Write-Host "DriverStore-only files: $($deferredFileCandidates.Count)"
-Write-Host "Added certs           : $($rootCertDiff.Added.Count + $publisherCertDiff.Added.Count)"
-Write-Host "Pending cert actions  : $($currentRelevantRootCerts.Count + $currentRelevantPublisherCerts.Count)"
-Write-Host "Pending review roots  : $($currentReviewOnlyRootCerts.Count)"
-Write-Host "Review roots linked   : $($currentLinkedReviewRootCerts.Count)"
-Write-Host "Review roots root-only: $($currentRootOnlyReviewCerts.Count)"
-Write-Host "Pending cert removals : $pendingCertificateCount"
-Write-Host "Relevant BCD changes  : $($bcdAdded.Count)"
-Write-Host "Pending BCD fixes     : $pendingBcdCount"
+Write-SummaryCount -Label 'Added uninstall apps' -Count $uninstallEntryDiff.Added.Count
+Write-SummaryCount -Label 'Likely uninstall apps' -Count $likelyUninstallEntries.Count
+Write-SummaryCount -Label 'Review uninstall apps' -Count $reviewUninstallEntries.Count
+Write-SummaryCount -Label 'Noise uninstall apps' -Count $noiseUninstallEntries.Count
+Write-SummaryCount -Label 'Pending uninstallers' -Count $pendingUninstallCount
+Write-SummaryCount -Label 'Added driver packages' -Count $packageDiff.Added.Count
+Write-SummaryCount -Label 'Pending packages now' -Count $pendingPackageCount
+Write-SummaryCount -Label 'Added services' -Count $serviceDiff.Added.Count
+Write-SummaryCount -Label 'Pending services now' -Count $pendingServiceCount
+Write-SummaryCount -Label 'Added PnP devices' -Count $addedDeviceCount
+Write-SummaryCount -Label 'Pending devices now' -Count $pendingDeviceCount
+Write-SummaryCount -Label 'Added focused files' -Count $fileDiff.Added.Count
+Write-SummaryCount -Label 'Pending file removals' -Count $pendingFileCount
+Write-SummaryCount -Label 'Direct file evidence' -Count $directFileCandidates.Count
+Write-SummaryCount -Label 'DriverStore-only files' -Count $deferredFileCandidates.Count
+Write-SummaryCount -Label 'Added registry keys' -Count $registryKeyDiff.Added.Count
+Write-SummaryCount -Label 'Pending registry cleanup' -Count $pendingRegistryCount
+Write-SummaryCount -Label 'Added certs' -Count ($rootCertDiff.Added.Count + $publisherCertDiff.Added.Count)
+Write-SummaryCount -Label 'Pending cert actions' -Count ($currentRelevantRootCerts.Count + $currentRelevantPublisherCerts.Count)
+Write-SummaryCount -Label 'Pending review roots' -Count $currentReviewOnlyRootCerts.Count
+Write-SummaryCount -Label 'Review roots linked' -Count $currentLinkedReviewRootCerts.Count
+Write-SummaryCount -Label 'Review roots root-only' -Count $currentRootOnlyReviewCerts.Count
+Write-SummaryCount -Label 'Pending cert removals' -Count $pendingCertificateCount
+Write-SummaryCount -Label 'Relevant BCD changes' -Count $bcdAdded.Count
+Write-SummaryCount -Label 'Pending BCD fixes' -Count $pendingBcdCount
+
+Write-RecommendedFlow -PendingUninstallerCount $pendingUninstallCount -PendingResidueCount $pendingActions.Count
 
 Write-Section -Title 'Cleanup Plan'
 if ($deferredFileCandidates.Count -gt 0) {
@@ -874,7 +1514,26 @@ if ($currentCrossStoreReviewCerts.Count -gt 0) {
 if ($currentReviewOnlyRootCerts.Count -gt 0) {
     Write-Host 'Note: Root review tags: [LINKED] = ίδιο thumbprint εμφανίστηκε και σε TRUSTEDPUBLISHER diff, [ROOT-ONLY] = το diff έδειξε μόνο ROOT store addition.' -ForegroundColor DarkYellow
 }
+if ($reviewUninstallEntries.Count -gt 0 -or $noiseUninstallEntries.Count -gt 0) {
+    Write-Host 'Note: Installed applications tagged as REVIEW/NOISE μένουν εκτός auto-cleanup plan.' -ForegroundColor DarkYellow
+}
+if ($pendingUninstallCount -gt 0) {
+    Write-Host 'Note: Official uninstallers in Phase 1 μπορούν να τρέξουν αυτόματα από το [4] Run Cleanup From Snapshots.' -ForegroundColor DarkYellow
+}
 Write-ActionList -Actions $sortedActions
+
+if ($reviewUninstallEntries.Count -gt 0 -or $noiseUninstallEntries.Count -gt 0) {
+    Write-Section -Title 'Installed Application Review'
+    foreach ($entry in $likelyUninstallEntries | Sort-Object DisplayName, DisplayVersion) {
+        Write-Host "[LIKELY] $(Format-UninstallEntryLabel -Entry $entry)" -ForegroundColor Yellow
+    }
+    foreach ($entry in $reviewUninstallEntries | Sort-Object DisplayName, DisplayVersion) {
+        Write-Host "[REVIEW] $(Format-UninstallEntryLabel -Entry $entry)" -ForegroundColor Cyan
+    }
+    foreach ($entry in $noiseUninstallEntries | Sort-Object DisplayName, DisplayVersion) {
+        Write-Host "[NOISE]  $(Format-UninstallEntryLabel -Entry $entry)" -ForegroundColor DarkGray
+    }
+}
 
 if ($currentReviewOnlyRootCerts.Count -gt 0) {
     Write-Section -Title 'Root Certificate Review'
@@ -886,7 +1545,12 @@ if ($currentReviewOnlyRootCerts.Count -gt 0) {
 
 if ($AuditOnly) {
     Write-Host ''
-    Write-Host 'AuditOnly mode: δεν έγινε καμία αλλαγή.' -ForegroundColor Green
+    if ($pendingUninstallCount -gt 0) {
+        Write-Host 'AuditOnly mode: δεν έγινε καμία αλλαγή. Το [4] Run Cleanup From Snapshots θα ξεκινήσει πρώτα τον official uninstaller και μετά τα residue steps.' -ForegroundColor Green
+    }
+    else {
+        Write-Host 'AuditOnly mode: δεν έγινε καμία αλλαγή.' -ForegroundColor Green
+    }
     exit 0
 }
 
@@ -898,14 +1562,45 @@ if ($pendingActions.Count -eq 0) {
 
 Write-Host ''
 Write-Host "Pending actions: $($pendingActions.Count)" -ForegroundColor Yellow
-Write-Host 'Το script θα προχωρήσει step-by-step και θα ζητήσει επιβεβαίωση σε κάθε action.' -ForegroundColor Yellow
+if ($pendingUninstallCount -gt 0) {
+    Write-Host 'Το script θα ξεκινήσει με τον official uninstaller και μετά θα προχωρήσει step-by-step στα residue actions.' -ForegroundColor Yellow
+}
+else {
+    Write-Host 'Το script θα προχωρήσει step-by-step και θα ζητήσει επιβεβαίωση σε κάθε action.' -ForegroundColor Yellow
+}
 
 if (-not $AssumeYes) {
-    $globalConfirm = Read-Host "Γράψε CLEAN για να ξεκινήσει η step-by-step αφαίρεση"
-    if ($globalConfirm -cne 'CLEAN') {
+    $globalConfirm = Read-HostTrimmed -Prompt "Γράψε CLEAN για να ξεκινήσει η step-by-step αφαίρεση"
+    $normalizedGlobalConfirm = if ($null -eq $globalConfirm) { '' } else { ([string]$globalConfirm).Trim() }
+    if ($normalizedGlobalConfirm.Length -eq 1 -and [int][char]$normalizedGlobalConfirm[0] -eq 27) {
+        $normalizedGlobalConfirm = 'ESC'
+    }
+
+    if ($normalizedGlobalConfirm -match '^(?i:esc|escape)$' -or $normalizedGlobalConfirm -cne 'CLEAN') {
         Write-Host 'Ακύρωση από τον χρήστη.' -ForegroundColor Yellow
         exit 0
     }
+}
+
+$autoApproveRemaining = $AssumeYes.IsPresent
+if (-not $AssumeYes) {
+    Write-Host ''
+    Write-Host '⚠️ EXTRA WARNING' -ForegroundColor Red
+    Write-Host 'Το επόμενο mode καθορίζει αν θα ζητείται confirm σε κάθε step ή αν θα τρέξουν ΟΛΑ τα pending actions μετά το CLEAN.' -ForegroundColor Yellow
+    Write-Host 'Το Yes to all είναι γρήγορο, αλλά πιο επιθετικό. Χρησιμοποίησέ το μόνο όταν είσαι σίγουρος για το plan.' -ForegroundColor DarkYellow
+    Write-Host ''
+
+    $executionMode = Read-SingleChoiceMenu -Items @(
+        [pscustomobject]@{ Key = '1'; Label = 'Step-by-step confirms for every action'; Color = 'Cyan'; Value = 'STEP' },
+        [pscustomobject]@{ Key = '2'; Label = 'YES TO ALL after CLEAN for the whole run'; Color = 'Yellow'; Value = 'ALL' }
+    ) -Prompt 'Execution mode' -CancelLabel 'Cancel cleanup run'
+
+    if ($null -eq $executionMode) {
+        Write-Host 'Ακύρωση από τον χρήστη.' -ForegroundColor Yellow
+        exit 0
+    }
+
+    $autoApproveRemaining = $executionMode.Value -eq 'ALL'
 }
 
 $completed = 0
@@ -922,7 +1617,7 @@ foreach ($action in $pendingActions) {
     Write-Host "Reason   : $($action.Reason)"
     Write-Host "Command  : $($action.CommandPreview)" -ForegroundColor DarkGray
 
-    if (-not $AssumeYes) {
+    if (-not $autoApproveRemaining) {
         $choice = Get-Choice -Prompt 'Run this step? [Y]es / [S]kip / [Q]uit'
         switch ($choice) {
             { $_ -in @('Q', 'QUIT') } {
