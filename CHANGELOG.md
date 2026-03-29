@@ -18,9 +18,17 @@
 ### Fixed
 
 - Διορθώθηκε runtime bug στο `Save-DriverSnapshot.ps1`: το νέο focused-registry capture χρησιμοποιούσε `HashSet.ToArray()` μέσα στο `Get-MatchingTerms`, κάτι που έσπαγε σε πραγματικό `PowerShell 7` run με `Method invocation failed`. Πλέον το term set επιστρέφεται με απλό enumerable pipeline και το snapshot μπορεί να συνεχίσει κανονικά.
+- Διορθώθηκε runtime bug στο `DriverCheck.ps1` για το `Compare Structured Reports`: missing line continuation στο picker call έκανε το `-InvalidSelectionMessage` να εκτελείται σαν ξεχωριστή εντολή αντί για parameter, οπότε το νέο menu έσκαγε αμέσως μόλις άνοιγε.
+- Τα interactive redraw menus του `Save-DriverSnapshot.ps1` και του `DriverCheck.ps1` έγιναν πιο ανθεκτικά σε host/viewport quirks: truncation στο console width και reserved redraw region μειώνουν το duplicated menu stacking που εμφανιζόταν μερικές φορές στο `Snapshot mode` και στα structured report pickers.
 
 ### Changed
 
+- Το `Compare-DriverSnapshots.ps1` γράφει πλέον compare-output folder με τρία human-readable artifacts: `full-report.txt`, `differences-only.txt`, `similarities-only.txt`, ώστε να μένει και persisted text view πέρα από το live terminal diff.
+- Τα generated compare-output folder names του `Compare-DriverSnapshots.ps1` έγιναν πιο σύντομα και path-safe (`cmp__...__vs__... <timestamp>`), ώστε να μην πλησιάζουν άσκοπα Windows path limits όταν τα snapshot labels είναι ήδη μεγάλα.
+- Προστέθηκε το `Compare-StructuredTextReport.ps1` ως lightweight structure-aware helper για report-to-report comparison με `Base` semantics και outputs `missing-vs-base.txt` / `extra-vs-base.txt`.
+- Το `DriverCheck.ps1` εκθέτει πλέον και το `Compare Structured Reports` από το main menu, με ίδιο launcher-style picker UX για επιλογή report folders/files κάτω από το `compare-output`.
+- Το `Compare Structured Reports` launcher flow έγινε πιο ανθρώπινο: δείχνει semantic compare labels derived από το source report και χρησιμοποιεί κατευθείαν το `differences-only.txt`, χωρίς δεύτερο file picker.
+- Το `Compare Structured Reports` flow απέκτησε και in-terminal viewer για `extra-vs-base`, `missing-vs-base` ή `both`, με section-aware pretty rendering αντί για σκέτο άνοιγμα raw txt files.
 - Το launcher απλοποιήθηκε: το `Current Case` αφαιρέθηκε από το header και το menu, και οι snapshot/cleanup pickers δεν βασίζονται πλέον σε case-priority UX.
 - Το `menu 6` του `DriverCheck.ps1` δεν είναι πλέον redundant `List Snapshots`. Αντικαταστάθηκε με guarded `Delete Snapshot` flow, γιατί τα compare/audit/cleanup pickers ήδη δείχνουν όλο το snapshot inventory όταν το χρειάζεσαι.
 - Το main launcher menu του `DriverCheck.ps1` υποστηρίζει πλέον `Up/Down`, `Enter`, number shortcuts και `ESC`, ώστε να μένει γρήγορο ακόμα κι όταν το tool μεγαλώνει.
@@ -120,6 +128,10 @@
 - Επιβεβαιώθηκε σε elevated host run ότι το μεγάλο bottleneck του save flow δεν είναι το `focused registry` ή το file hashing path, αλλά το `PnP device snapshot`, που μόνο του κατανάλωσε περίπου `49s` σε real Windows installation.
 - Το `Save-DriverSnapshot.ps1` δείχνει πλέον και real `PnP` scan progress μέσα στο βαρύτερο section του save flow, με counts για `Get-PnpDevice` property enrichment και `Win32_PnPSignedDriver` merge αντί για γενικό "working" feeling.
 - Το `Save-DriverSnapshot.ps1` υποστηρίζει πλέον `Snapshot mode`: `Quick` για faster καθημερινό save και `Full` για deepest `PnP` enrichment. Σε elevated host test το `Quick` mode έριξε το total save time από περίπου `52s` σε περίπου `6s`.
+- Το `Compare Structured Reports` picker αγνοεί πλέον το `compare-output\\structured-text` subtree και κάνει dedupe στα compare reports με semantic identity (`Before` / `After` pair + mode), ώστε παλιά timestamped reruns του ίδιου snapshot combo να μη γεμίζουν το menu 7.
+- Το `Delete Snapshot` confirm prompt στο launcher εκτελεί πλέον σωστά τη διαγραφή με `ENTER`, αντί να μένει αδρανές μέσα στο key loop.
+- Το `Compare Structured Reports` picker υποστηρίζει πλέον inline διαγραφή του highlighted compare report με `D` ή `Delete`, με `ENTER/ESC` confirmation χωρίς να βγαίνεις από το ίδιο menu flow.
+- Το `Compare Structured Reports` flow κάνει πλέον σωστό refresh μετά από delete μέσα στο picker και ξαναδιαβάζει τα compare reports από το disk πριν προχωρήσει, ώστε να μη μένουν mixed screens ή stale deleted paths.
 
 ## 2026-03-18
 

@@ -20,6 +20,7 @@
 | 🛠️ | **[Driver Check](#driver-check)**                         | Κάνει broad search για drivers και προχωρά σε ακριβή, επιβεβαιωμένη διαγραφή μόνο μετά από explicit `YES`.                       |
 | 📸  | **[Save Driver Snapshot](#save-driver-snapshot)**         | Παίρνει focused πριν/μετά snapshot για `BCD`, drivers, devices, services, registry, certs και `SetupAPI` evidence.               |
 | 🔍  | **[Compare Driver Snapshots](#compare-driver-snapshots)** | Συγκρίνει δύο snapshots και δείχνει ακριβώς τι πρόσθεσε ή τι άφησε πίσω ένα install/remove flow, μαζί με focused registry diffs. |
+| 🧾  | **[Compare Structured Text Report](#compare-structured-text-report)** | Συγκρίνει δύο structured text reports με `Base` semantics και κρατά section-aware outputs για `missing` και `extra` blocks. |
 | 🧹  | **[Cleanup From Snapshots](#cleanup-from-snapshots)**     | Χτίζει step-by-step cleanup plan από `Before/After` snapshots και προχωρά μόνο με δική σου επιβεβαίωση.                          |
 
 <a id="drivercheck-launcher"></a>
@@ -45,6 +46,7 @@ pwsh -ExecutionPolicy Bypass -File .\DriverCheck.ps1
 | Parameter        | Type     | Default       | Description                                                                  |
 | ---------------- | -------- | ------------- | ---------------------------------------------------------------------------- |
 | `-SnapshotsRoot` | `string` | `.\snapshots` | Root folder από όπου διαβάζει snapshots για compare/audit/cleanup workflows. |
+| `-CompareOutputRoot` | `string` | `.\compare-output` | Root folder από όπου διαβάζει compare reports για το structured report compare flow. |
 
 ### Main Actions
 
@@ -54,9 +56,11 @@ pwsh -ExecutionPolicy Bypass -File .\DriverCheck.ps1
 - `Run Cleanup From Snapshots`
 - `Live Driver Check`
 - `Delete Snapshot`
+- `Compare Structured Reports`
 
 💡 Το launcher δέχεται πλέον `Up/Down`, `Enter`, `1..9` shortcuts και `ESC` ως σταθερό cancel/exit path, με πιο ήπιο in-place redraw ώστε να μειώνεται το terminal blink.
 💡 Το `Delete Snapshot` είναι intentionally guarded: πρώτα διαλέγεις snapshot από τον ίδιο picker, γίνεται path verification μέσα στο `snapshots` root, και μετά το confirm είναι απλό `ENTER = delete / ESC = cancel`.
+💡 Το `Compare Structured Reports` δείχνει πλέον human-readable labels από το source compare report, π.χ. `Multi / BeforeInstall with Multi-Fast / AfterInstall`, χρησιμοποιεί αυτόματα το `differences-only.txt` κάθε compare folder χωρίς δεύτερο file picker, και μετά δίνει in-terminal viewer για `extra-vs-base`, `missing-vs-base` ή και τα δύο μαζί.
 
 <a id="drivercheck-workbench"></a>
 
@@ -288,6 +292,7 @@ pwsh -ExecutionPolicy Bypass -File .\internal\Compare-DriverSnapshots.ps1 `
 | `-BeforePath`    | `string` | empty         | Snapshot folder name or path για το baseline. Αν λείπει, ανοίγει picker.         |
 | `-AfterPath`     | `string` | empty         | Snapshot folder name or path για το compare target. Αν λείπει, ανοίγει picker.   |
 | `-SnapshotsRoot` | `string` | `.\snapshots` | Root folder από όπου διαβάζει snapshots όταν χρησιμοποιείς picker ή short names. |
+| `-CompareOutputRoot` | `string` | `.\compare-output` | Root folder όπου γράφονται τα human-readable compare reports.                    |
 | `-CaseName`      | `string` | empty         | Προαιρετικό case hint ώστε τα matching snapshots να ανεβαίνουν πρώτα στη λίστα.  |
 
 ### Τι Συγκρίνει
@@ -307,6 +312,13 @@ pwsh -ExecutionPolicy Bypass -File .\internal\Compare-DriverSnapshots.ps1 `
 
 - αν δεν δώσεις `-BeforePath` / `-AfterPath`, το script ανοίγει numbered snapshot picker αντί να απαιτεί full paths
 - αν δώσεις μόνο folder names, τα λύνει αυτόματα κάτω από το `SnapshotsRoot`
+- κάθε compare γράφει πλέον και human-readable report folder κάτω από το `CompareOutputRoot`
+- μέσα στο compare-output folder γράφονται τρία text artifacts:
+  `full-report.txt`,
+  `differences-only.txt`,
+  `similarities-only.txt`
+- το compare-output folder naming είναι πλέον πιο compact (`cmp__...__vs__... <timestamp>`) ώστε να αποφεύγονται άσκοπα path-length προβλήματα στα Windows
+- τα report files κρατούν και το `SnapshotMode` (`Quick` / `Full`) για κάθε πλευρά, ώστε να είναι πιο ξεκάθαρο πόσο deep ήταν το source data
 - αγνοεί γνωστό Hyper-V / remote-session noise στα `PnP` results
 - κρύβει benign `BCD` noise όπως explicit `testsigning No`
 - τα compare additions/removals χρησιμοποιούν πλέον σταθερό color rule: `+` green και `-` red για πιο γρήγορο scan
@@ -319,6 +331,49 @@ pwsh -ExecutionPolicy Bypass -File .\internal\Compare-DriverSnapshots.ps1 `
   `REVIEW` για shared runtimes/dependencies όπως `Visual C++`,
   `NOISE` για background churn candidates όπως `EdgeWebView`
 - τα νέα snapshots δείχνουν πλέον και explicit `PnP` links τύπου `device -> oemX.inf -> service`, ώστε devices όπως virtual buses να μη φαίνονται σαν isolated names χωρίς driver correlation
+
+<a id="compare-structured-text-report"></a>
+
+## 🧾 Compare Structured Text Report
+
+> Small structure-aware helper για περιπτώσεις όπου θέλεις να συγκρίνεις δύο generated text reports χωρίς να χαθεί η οργάνωση των sections.
+
+### Τι Λύνει
+
+- βοηθά σε debug cases όπως `Full` vs `Quick` `differences-only.txt`
+- κρατά sections όπως `PnP Devices`, `Certificates`, `Focused Registry`
+- κρατά μαζί το item line και τα indented detail lines του
+- δεν σε αναγκάζει να διαβάζεις raw generic diff με πολύ unchanged noise
+
+### Usage
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\internal\Compare-StructuredTextReport.ps1 `
+  -BasePath .\compare-output\<base-run>\differences-only.txt `
+  -ComparePath .\compare-output\<compare-run>\differences-only.txt
+```
+
+| Parameter      | Type     | Default                            | Description                                                                 |
+| -------------- | -------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| `-BasePath`    | `string` | required                           | Το source-of-truth file.                                                    |
+| `-ComparePath` | `string` | required                           | Το file που συγκρίνεται απέναντι στο base.                                  |
+| `-OutputRoot`  | `string` | `.\compare-output\structured-text` | Root folder όπου γράφονται τα structure-aware compare outputs.              |
+| `-Profile`     | `string` | `DriverCheck`                      | `DriverCheck` για τα report conventions του repo ή `Generic` για πιο ουδέτερο parse. |
+
+### Output Files
+
+- `missing-vs-base.txt`
+  blocks που υπάρχουν στο `Base` αλλά λείπουν από το `Compare`
+- `extra-vs-base.txt`
+  blocks που υπάρχουν στο `Compare` αλλά είναι extra σε σχέση με το `Base`
+
+### Notes
+
+- το utility είναι section-aware, όχι απλό line diff
+- από το main `DriverCheck.ps1` launcher, το structured compare flow διαλέγει μόνο compare report runs και δουλεύει αυτόματα πάνω στο `differences-only.txt` τους
+- μετά το run, ο launcher δίνει μικρό terminal viewer για `extra-vs-base`, `missing-vs-base` ή `both`, ώστε να μην ανοίγεις raw txt files μόνο και μόνο για γρήγορο review
+- το `DriverCheck` profile αγνοεί metadata-only sections όπως `Driver Snapshot Compare` και `Compare Reports`
+- είναι intentionally lightweight template για structured reports και όχι universal smart diff για arbitrary text files
 
 <a id="cleanup-from-snapshots"></a>
 
@@ -443,6 +498,7 @@ drivercheck/
 ├── DriverCheck.ps1    # Μοναδικό root entry point / main launcher
 ├── internal/
 │   ├── Compare-DriverSnapshots.ps1
+│   ├── Compare-StructuredTextReport.ps1
 │   ├── DriverCheckWorkbench.ps1
 │   ├── Invoke-DriverCleanupFromSnapshots.ps1
 │   ├── Invoke-DriverLiveCheck.ps1

@@ -134,6 +134,36 @@ function Test-IsEscapeInput {
     return $raw.Trim() -match '^(?i:esc|escape)$'
 }
 
+function Get-ConsoleSafeText {
+    param(
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $value = $Text ?? ''
+    try {
+        $windowWidth = [Console]::WindowWidth
+    }
+    catch {
+        return $value
+    }
+
+    if ($windowWidth -le 0) {
+        return $value
+    }
+
+    $maxLength = [Math]::Max(8, $windowWidth - 2)
+    if ($value.Length -le $maxLength) {
+        return $value
+    }
+
+    if ($maxLength -le 3) {
+        return $value.Substring(0, $maxLength)
+    }
+
+    return ($value.Substring(0, $maxLength - 3) + '...')
+}
+
 function Resolve-SnapshotMode {
     param(
         [string]$Mode,
@@ -213,12 +243,12 @@ function Get-StageSelection {
             $item = $stageItems[$i]
             $isSelected = $i -eq $selectedIndex
             $prefix = if ($isSelected) { '❯' } else { ' ' }
-            $line = "{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label
+            $line = Get-ConsoleSafeText -Text ("{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label)
             $color = if ($isSelected) { 'White' } else { $item.Color }
             Write-Host "$line$eraseLine" -ForegroundColor $color
         }
-        Write-Host "[ENTER] Select highlighted stage$eraseLine" -ForegroundColor DarkGray
-        Write-Host "[ESC] Cancel snapshot save$eraseLine" -ForegroundColor DarkGray
+        Write-Host ((Get-ConsoleSafeText -Text '[ENTER] Select highlighted stage') + $eraseLine) -ForegroundColor DarkGray
+        Write-Host ((Get-ConsoleSafeText -Text '[ESC] Cancel snapshot save') + $eraseLine) -ForegroundColor DarkGray
     }
 
     [Console]::CursorVisible = $false
@@ -228,6 +258,11 @@ function Get-StageSelection {
         Write-Host '----------------------------' -ForegroundColor Cyan
         Write-Host ''
         $menuTop = [Console]::CursorTop
+        $frameHeight = $stageItems.Count + 2
+        for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
+            Write-Host ''
+        }
+        [Console]::SetCursorPosition(0, $menuTop)
 
         while ($true) {
             Write-StageMenuFrame
@@ -355,12 +390,12 @@ function Get-SnapshotModeSelection {
             $item = $modeItems[$i]
             $isSelected = $i -eq $selectedIndex
             $prefix = if ($isSelected) { '❯' } else { ' ' }
-            $line = "{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label
+            $line = Get-ConsoleSafeText -Text ("{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label)
             $color = if ($isSelected) { 'White' } else { $item.Color }
             Write-Host "$line$eraseLine" -ForegroundColor $color
         }
-        Write-Host "[ENTER] Select highlighted mode$eraseLine" -ForegroundColor DarkGray
-        Write-Host "[ESC] Cancel snapshot save$eraseLine" -ForegroundColor DarkGray
+        Write-Host ((Get-ConsoleSafeText -Text '[ENTER] Select highlighted mode') + $eraseLine) -ForegroundColor DarkGray
+        Write-Host ((Get-ConsoleSafeText -Text '[ESC] Cancel snapshot save') + $eraseLine) -ForegroundColor DarkGray
     }
 
     [Console]::CursorVisible = $false
@@ -370,6 +405,11 @@ function Get-SnapshotModeSelection {
         Write-Host '---------------------' -ForegroundColor Cyan
         Write-Host ''
         $menuTop = [Console]::CursorTop
+        $frameHeight = $modeItems.Count + 2
+        for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
+            Write-Host ''
+        }
+        [Console]::SetCursorPosition(0, $menuTop)
 
         while ($true) {
             Write-SnapshotModeFrame

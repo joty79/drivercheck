@@ -3,7 +3,8 @@ param(
     [string]$BeforePath,
     [string]$AfterPath,
     [string]$SnapshotsRoot = (Join-Path $PSScriptRoot 'snapshots'),
-    [string]$CaseName
+    [string]$CaseName,
+    [string]$CompareOutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'compare-output')
 )
 
 Set-StrictMode -Version Latest
@@ -580,10 +581,34 @@ function Compare-NamedObjects {
         }
     }
 
+    $unchanged = foreach ($key in $afterMap.Keys) {
+        if (-not $beforeMap.ContainsKey($key)) {
+            continue
+        }
+
+        $beforeItem = $beforeMap[$key]
+        $afterItem = $afterMap[$key]
+        $hasDifferences = $false
+
+        foreach ($property in $CompareProperties) {
+            $beforeValue = [string]$beforeItem.$property
+            $afterValue = [string]$afterItem.$property
+            if ($beforeValue -ne $afterValue) {
+                $hasDifferences = $true
+                break
+            }
+        }
+
+        if (-not $hasDifferences) {
+            $afterItem
+        }
+    }
+
     [pscustomobject]@{
         Added = @($added | Sort-Object $KeyProperty)
         Removed = @($removed | Sort-Object $KeyProperty)
         Changed = @($changed | Sort-Object Key)
+        Unchanged = @($unchanged | Sort-Object $KeyProperty)
     }
 }
 
@@ -844,6 +869,145 @@ function Get-UninstallEntryCommandHint {
     return ''
 }
 
+function Convert-ToSafeReportName {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'compare'
+    }
+
+    $safeValue = $Value.Trim()
+    $safeValue = $safeValue -replace '[\\/:*?"<>|]+', '-'
+    $safeValue = $safeValue -replace '\s{2,}', ' '
+    $safeValue = $safeValue.Trim(' ', '.', '-')
+
+    if ([string]::IsNullOrWhiteSpace($safeValue)) {
+        return 'compare'
+    }
+
+    return $safeValue
+}
+
+function Get-CompareReportToken {
+    param(
+        [string]$SnapshotPath,
+        [string]$FallbackLabel
+    )
+
+    $metadata = Read-JsonFile -Path (Join-Path $SnapshotPath 'metadata.json')
+    $caseName = [string](Get-OptionalObjectProperty -InputObject $metadata -PropertyName 'CaseName' -DefaultValue '')
+    $stage = [string](Get-OptionalObjectProperty -InputObject $metadata -PropertyName 'Stage' -DefaultValue '')
+    $snapshotName = [string](Get-OptionalObjectProperty -InputObject $metadata -PropertyName 'SnapshotName' -DefaultValue '')
+
+    $token = switch ($true) {
+        { -not [string]::IsNullOrWhiteSpace($caseName) -and -not [string]::IsNullOrWhiteSpace($stage) } { "$caseName-$stage"; break }
+        { -not [string]::IsNullOrWhiteSpace($stage) } { $stage; break }
+        { -not [string]::IsNullOrWhiteSpace($snapshotName) -and $snapshotName -ne 'Snapshot' } { $snapshotName; break }
+        default { $FallbackLabel }
+    }
+
+    $safeToken = Convert-ToSafeReportName -Value $token
+    if ($safeToken.Length -gt 20) {
+        $safeToken = $safeToken.Substring(0, 20).TrimEnd(' ', '.', '-')
+    }
+
+    return $safeToken
+}
+
+function Add-ReportLine {
+    param(
+        [System.Collections.Generic.List[string]]$Lines,
+        [AllowEmptyString()]
+        [string]$Text = ''
+    )
+
+    $Lines.Add(($Text ?? ''))
+}
+
+function Add-ReportSection {
+    param(
+        [System.Collections.Generic.List[string]]$Lines,
+        [string]$Title
+    )
+
+    Add-ReportLine -Lines $Lines
+    Add-ReportLine -Lines $Lines -Text $Title
+    Add-ReportLine -Lines $Lines -Text ('-' * $Title.Length)
+}
+
+function Get-PnpDeviceDetailTextLines {
+    param(
+        [object]$Device
+    )
+
+    $details = @(
+        @{ Label = 'InfName'; Value = [string]$Device.InfName },
+        @{ Label = 'InfSection'; Value = [string]$Device.DriverInfSection },
+        @{ Label = 'Provider'; Value = [string]$Device.DriverProviderName },
+        @{ Label = 'MatchingDeviceId'; Value = [string]$Device.MatchingDeviceId },
+        @{ Label = 'Service'; Value = [string]$Device.ServiceName },
+        @{ Label = 'DriverKey'; Value = [string]$Device.DriverKey },
+        @{ Label = 'Enumerator'; Value = [string]$Device.EnumeratorName },
+        @{ Label = 'Parent'; Value = [string]$Device.Parent },
+        @{ Label = 'ClassGuid'; Value = [string]$Device.ClassGuid },
+        @{ Label = 'DriverVersion'; Value = [string]$Device.DriverVersion },
+        @{ Label = 'DriverDate'; Value = [string]$Device.DriverDate }
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($detail in $details) {
+        if (-not [string]::IsNullOrWhiteSpace($detail.Value)) {
+            $lines.Add(("    {0,-16}: {1}" -f $detail.Label, $detail.Value))
+        }
+    }
+
+    return @($lines)
+}
+
+function Get-CommonTextItems {
+    param(
+        [string[]]$BeforeItems,
+        [string[]]$AfterItems
+    )
+
+    $beforeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @($BeforeItems)) {
+        if (-not [string]::IsNullOrWhiteSpace($item)) {
+            [void]$beforeSet.Add($item)
+        }
+    }
+
+    $common = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @($AfterItems)) {
+        if ([string]::IsNullOrWhiteSpace($item)) {
+            continue
+        }
+
+        if ($beforeSet.Contains($item)) {
+            $common.Add($item)
+        }
+    }
+
+    return @($common | Sort-Object -Unique)
+}
+
+function New-CompareReportPath {
+    param(
+        [string]$RootPath,
+        [string]$BeforeSnapshotPath,
+        [string]$AfterSnapshotPath
+    )
+
+    $beforeName = Get-CompareReportToken -SnapshotPath $BeforeSnapshotPath -FallbackLabel 'before'
+    $afterName = Get-CompareReportToken -SnapshotPath $AfterSnapshotPath -FallbackLabel 'after'
+    $folderName = 'cmp__{0}__vs__{1}' -f $beforeName, $afterName
+    $targetPath = Join-Path $RootPath $folderName
+    New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+    return $targetPath
+}
+
 function Write-PnpDeviceDetailLines {
     param(
         [object]$Device
@@ -1012,6 +1176,287 @@ $deviceChanged = @($deviceDiff.Changed | Where-Object {
 
         -not (Should-IgnoreDevice -Device ([pscustomobject]@{ FriendlyName = $afterDevice.FriendlyName; InstanceId = $_.Key }))
     })
+$deviceUnchanged = @($deviceDiff.Unchanged | Where-Object { -not (Should-IgnoreDevice -Device $_) })
+
+$commonBcd = @(Get-CommonTextItems -BeforeItems $beforeBcd -AfterItems $afterBcd)
+$reportOutputPath = New-CompareReportPath -RootPath $CompareOutputRoot -BeforeSnapshotPath $BeforePath -AfterSnapshotPath $AfterPath
+$fullReportLines = [System.Collections.Generic.List[string]]::new()
+$differenceReportLines = [System.Collections.Generic.List[string]]::new()
+$similarityReportLines = [System.Collections.Generic.List[string]]::new()
+
+foreach ($reportLines in @($fullReportLines, $differenceReportLines, $similarityReportLines)) {
+    Add-ReportLine -Lines $reportLines -Text 'Driver Snapshot Compare'
+    Add-ReportLine -Lines $reportLines -Text '-----------------------'
+    Add-ReportLine -Lines $reportLines -Text "Before : $BeforePath"
+    Add-ReportLine -Lines $reportLines -Text "After  : $AfterPath"
+    Add-ReportLine -Lines $reportLines -Text ("Before mode : {0}" -f ([string](Get-OptionalObjectProperty -InputObject $beforeMetadata -PropertyName 'SnapshotMode' -DefaultValue 'Full')))
+    Add-ReportLine -Lines $reportLines -Text ("After mode  : {0}" -f ([string](Get-OptionalObjectProperty -InputObject $afterMetadata -PropertyName 'SnapshotMode' -DefaultValue 'Full')))
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Driver Packages'
+if ($packageDiff.Added.Count -eq 0 -and $packageDiff.Removed.Count -eq 0 -and $packageDiff.Changed.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No driver package changes detected.'
+}
+else {
+    foreach ($item in $packageDiff.Added) { Add-ReportLine -Lines $differenceReportLines -Text "+ $($item.PublishedName) :: $($item.OriginalName) :: $($item.ProviderName)" }
+    foreach ($item in $packageDiff.Removed) { Add-ReportLine -Lines $differenceReportLines -Text "- $($item.PublishedName) :: $($item.OriginalName) :: $($item.ProviderName)" }
+    foreach ($item in $packageDiff.Changed) {
+        Add-ReportLine -Lines $differenceReportLines -Text "* $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$($diff.Before)' -> '$($diff.After)'"
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Driver Packages'
+if ($packageDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged driver packages detected.'
+}
+else {
+    foreach ($item in $packageDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= $($item.PublishedName) :: $($item.OriginalName) :: $($item.ProviderName)" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Services'
+if ($serviceDiff.Added.Count -eq 0 -and $serviceDiff.Removed.Count -eq 0 -and $serviceDiff.Changed.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No service changes detected.'
+}
+else {
+    foreach ($item in $serviceDiff.Added) { Add-ReportLine -Lines $differenceReportLines -Text "+ $($item.Name) :: $($item.ImagePath)" }
+    foreach ($item in $serviceDiff.Removed) { Add-ReportLine -Lines $differenceReportLines -Text "- $($item.Name) :: $($item.ImagePath)" }
+    foreach ($item in $serviceDiff.Changed) {
+        Add-ReportLine -Lines $differenceReportLines -Text "* $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$($diff.Before)' -> '$($diff.After)'"
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Services'
+if ($serviceDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged services detected.'
+}
+else {
+    foreach ($item in $serviceDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= $($item.Name) :: $($item.ImagePath)" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Installed Applications'
+if ($uninstallEntryDiff.Added.Count -eq 0 -and $uninstallEntryDiff.Removed.Count -eq 0 -and $uninstallEntryDiff.Changed.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No uninstall-entry changes detected.'
+}
+else {
+    foreach ($item in $uninstallEntryDiff.Added) {
+        $classification = Get-UninstallEntryClassification -Entry $item
+        Add-ReportLine -Lines $differenceReportLines -Text "+ [$classification] $(Format-UninstallEntryLabel -Entry $item)"
+        $commandHint = Get-UninstallEntryCommandHint -Entry $item
+        if (-not [string]::IsNullOrWhiteSpace($commandHint)) { Add-ReportLine -Lines $differenceReportLines -Text "    $commandHint" }
+    }
+    foreach ($item in $uninstallEntryDiff.Removed) {
+        $classification = Get-UninstallEntryClassification -Entry $item
+        Add-ReportLine -Lines $differenceReportLines -Text "- [$classification] $(Format-UninstallEntryLabel -Entry $item)"
+    }
+    foreach ($item in $uninstallEntryDiff.Changed) {
+        $afterEntry = $afterUninstallEntries | Where-Object { $_.Identity -eq $item.Key } | Select-Object -First 1
+        $beforeEntry = $beforeUninstallEntries | Where-Object { $_.Identity -eq $item.Key } | Select-Object -First 1
+        $entryForClass = if ($null -ne $afterEntry) { $afterEntry } else { $beforeEntry }
+        $classification = Get-UninstallEntryClassification -Entry $entryForClass
+        Add-ReportLine -Lines $differenceReportLines -Text "* [$classification] $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            $beforeValue = if ($diff.Property -match 'UninstallString') { Format-DisplayText -Value $diff.Before } else { $diff.Before }
+            $afterValue = if ($diff.Property -match 'UninstallString') { Format-DisplayText -Value $diff.After } else { $diff.After }
+            Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$beforeValue' -> '$afterValue'"
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Installed Applications'
+if ($uninstallEntryDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged uninstall entries detected.'
+}
+else {
+    foreach ($item in $uninstallEntryDiff.Unchanged) {
+        $classification = Get-UninstallEntryClassification -Entry $item
+        Add-ReportLine -Lines $similarityReportLines -Text "= [$classification] $(Format-UninstallEntryLabel -Entry $item)"
+    }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Focused Registry'
+$hasRegistryChanges = $registryKeyDiff.Added.Count -gt 0 -or
+    $registryKeyDiff.Removed.Count -gt 0 -or
+    $registryValueDiff.Added.Count -gt 0 -or
+    $registryValueDiff.Removed.Count -gt 0 -or
+    $registryValueDiff.Changed.Count -gt 0
+if (-not $hasRegistryChanges) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No focused registry changes detected.'
+}
+else {
+    foreach ($item in $registryKeyDiff.Added) { Add-ReportLine -Lines $differenceReportLines -Text "+ KEY :: $($item.KeyPath)" }
+    foreach ($item in $registryKeyDiff.Removed) { Add-ReportLine -Lines $differenceReportLines -Text "- KEY :: $($item.KeyPath)" }
+    foreach ($item in $registryValueDiff.Added) { Add-ReportLine -Lines $differenceReportLines -Text "+ VALUE :: $($item.KeyPath) :: [$($item.ValueName)] = $(Format-DisplayText -Value $item.ValueData)" }
+    foreach ($item in $registryValueDiff.Removed) { Add-ReportLine -Lines $differenceReportLines -Text "- VALUE :: $($item.KeyPath) :: [$($item.ValueName)] = $(Format-DisplayText -Value $item.ValueData)" }
+    foreach ($item in $registryValueDiff.Changed) {
+        Add-ReportLine -Lines $differenceReportLines -Text "* VALUE :: $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            if ($diff.Property -eq 'ValueData') {
+                Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$(Format-DisplayText -Value $diff.Before)' -> '$(Format-DisplayText -Value $diff.After)'"
+            }
+            else {
+                Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$($diff.Before)' -> '$($diff.After)'"
+            }
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Focused Registry'
+if ($registryKeyDiff.Unchanged.Count -eq 0 -and $registryValueDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged focused registry items detected.'
+}
+else {
+    foreach ($item in $registryKeyDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= KEY :: $($item.KeyPath)" }
+    foreach ($item in $registryValueDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= VALUE :: $($item.KeyPath) :: [$($item.ValueName)] = $(Format-DisplayText -Value $item.ValueData)" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'PnP Devices'
+if ($deviceAdded.Count -eq 0 -and $deviceRemoved.Count -eq 0 -and $deviceChanged.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No PnP device changes detected.'
+}
+else {
+    foreach ($item in $deviceAdded) {
+        Add-ReportLine -Lines $differenceReportLines -Text "+ $($item.InstanceId) :: $($item.FriendlyName)"
+        foreach ($line in @(Get-PnpDeviceDetailTextLines -Device $item)) { Add-ReportLine -Lines $differenceReportLines -Text $line }
+    }
+    foreach ($item in $deviceRemoved) {
+        Add-ReportLine -Lines $differenceReportLines -Text "- $($item.InstanceId) :: $($item.FriendlyName)"
+        foreach ($line in @(Get-PnpDeviceDetailTextLines -Device $item)) { Add-ReportLine -Lines $differenceReportLines -Text $line }
+    }
+    foreach ($item in $deviceChanged) {
+        Add-ReportLine -Lines $differenceReportLines -Text "* $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$($diff.Before)' -> '$($diff.After)'"
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'PnP Devices'
+if ($deviceUnchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged PnP devices detected.'
+}
+else {
+    foreach ($item in $deviceUnchanged) {
+        Add-ReportLine -Lines $similarityReportLines -Text "= $($item.InstanceId) :: $($item.FriendlyName)"
+        foreach ($line in @(Get-PnpDeviceDetailTextLines -Device $item)) { Add-ReportLine -Lines $similarityReportLines -Text $line }
+    }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Certificates'
+$certChangeCount = $rootCertDiff.Added.Count + $rootCertDiff.Removed.Count + $publisherCertDiff.Added.Count + $publisherCertDiff.Removed.Count
+if ($certChangeCount -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No LocalMachine certificate additions/removals detected.'
+}
+else {
+    foreach ($item in $rootCertDiff.Added) {
+        $tag = Get-CertificateTag -Certificate $item -StoreName 'ROOT' -PublisherThumbprints $publisherAddedThumbprints
+        Add-ReportLine -Lines $differenceReportLines -Text "+ ROOT :: [$tag] $($item.Thumbprint) :: $($item.Subject)"
+    }
+    foreach ($item in $rootCertDiff.Removed) {
+        $tag = Get-CertificateTag -Certificate $item -StoreName 'ROOT' -PublisherThumbprints $publisherRemovedThumbprints
+        Add-ReportLine -Lines $differenceReportLines -Text "- ROOT :: [$tag] $($item.Thumbprint) :: $($item.Subject)"
+    }
+    foreach ($item in $publisherCertDiff.Added) {
+        $tag = Get-CertificateTag -Certificate $item -StoreName 'TRUSTEDPUBLISHER' -PublisherThumbprints $publisherAddedThumbprints
+        Add-ReportLine -Lines $differenceReportLines -Text "+ TRUSTEDPUBLISHER :: [$tag] $($item.Thumbprint) :: $($item.Subject)"
+    }
+    foreach ($item in $publisherCertDiff.Removed) {
+        $tag = Get-CertificateTag -Certificate $item -StoreName 'TRUSTEDPUBLISHER' -PublisherThumbprints $publisherRemovedThumbprints
+        Add-ReportLine -Lines $differenceReportLines -Text "- TRUSTEDPUBLISHER :: [$tag] $($item.Thumbprint) :: $($item.Subject)"
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Certificates'
+if ($rootCertDiff.Unchanged.Count -eq 0 -and $publisherCertDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged LocalMachine certificate items detected.'
+}
+else {
+    foreach ($item in $rootCertDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= ROOT :: $($item.Thumbprint) :: $($item.Subject)" }
+    foreach ($item in $publisherCertDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= TRUSTEDPUBLISHER :: $($item.Thumbprint) :: $($item.Subject)" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'Focused Files'
+if ($fileDiff.Added.Count -eq 0 -and $fileDiff.Removed.Count -eq 0 -and $fileDiff.Changed.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No focused file changes detected.'
+}
+else {
+    foreach ($item in $fileDiff.Added) { Add-ReportLine -Lines $differenceReportLines -Text "+ $($item.FullName)" }
+    foreach ($item in $fileDiff.Removed) { Add-ReportLine -Lines $differenceReportLines -Text "- $($item.FullName)" }
+    foreach ($item in $fileDiff.Changed) {
+        Add-ReportLine -Lines $differenceReportLines -Text "* $($item.Key)"
+        foreach ($diff in $item.Differences) {
+            Add-ReportLine -Lines $differenceReportLines -Text "    $($diff.Property): '$($diff.Before)' -> '$($diff.After)'"
+        }
+    }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'Focused Files'
+if ($fileDiff.Unchanged.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged focused files detected.'
+}
+else {
+    foreach ($item in $fileDiff.Unchanged) { Add-ReportLine -Lines $similarityReportLines -Text "= $($item.FullName)" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'BCD Changes'
+if ($bcdAdded.Count -eq 0 -and $bcdRemoved.Count -eq 0) {
+    Add-ReportLine -Lines $differenceReportLines -Text 'No tracked BCD changes detected.'
+}
+else {
+    foreach ($line in $bcdAdded) { Add-ReportLine -Lines $differenceReportLines -Text "+ $line" }
+    foreach ($line in $bcdRemoved) { Add-ReportLine -Lines $differenceReportLines -Text "- $line" }
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'BCD Changes'
+if ($commonBcd.Count -eq 0) {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged tracked BCD lines detected.'
+}
+else {
+    foreach ($line in $commonBcd) { Add-ReportLine -Lines $similarityReportLines -Text "= $line" }
+}
+
+Add-ReportSection -Lines $differenceReportLines -Title 'SetupAPI Log'
+if ($beforeSetupApi -and $afterSetupApi) {
+    Add-ReportLine -Lines $differenceReportLines -Text "Before size : $($beforeSetupApi.Length)"
+    Add-ReportLine -Lines $differenceReportLines -Text "After size  : $($afterSetupApi.Length)"
+    Add-ReportLine -Lines $differenceReportLines -Text "Before time : $($beforeSetupApi.LastWriteTime)"
+    Add-ReportLine -Lines $differenceReportLines -Text "After time  : $($afterSetupApi.LastWriteTime)"
+}
+else {
+    Add-ReportLine -Lines $differenceReportLines -Text 'SetupAPI metadata was not available in both snapshots.'
+}
+
+Add-ReportSection -Lines $similarityReportLines -Title 'SetupAPI Log'
+if ($beforeSetupApi -and $afterSetupApi -and [string]$beforeSetupApi.Length -eq [string]$afterSetupApi.Length -and [string]$beforeSetupApi.LastWriteTime -eq [string]$afterSetupApi.LastWriteTime) {
+    Add-ReportLine -Lines $similarityReportLines -Text "Size/time unchanged :: $($afterSetupApi.Length) :: $($afterSetupApi.LastWriteTime)"
+}
+else {
+    Add-ReportLine -Lines $similarityReportLines -Text 'No unchanged SetupAPI metadata summary detected.'
+}
+
+foreach ($line in $differenceReportLines) { $fullReportLines.Add($line) }
+Add-ReportLine -Lines $fullReportLines
+Add-ReportLine -Lines $fullReportLines -Text 'Similarities'
+Add-ReportLine -Lines $fullReportLines -Text '------------'
+foreach ($line in $similarityReportLines | Select-Object -Skip 6) { $fullReportLines.Add($line) }
+
+while ($fullReportLines.Count -gt 6 -and
+    $fullReportLines[0] -eq 'Driver Snapshot Compare' -and
+    $fullReportLines[6] -eq 'Driver Snapshot Compare') {
+    $fullReportLines.RemoveRange(0, 6)
+}
+
+$fullReportPath = Join-Path $reportOutputPath 'full-report.txt'
+$differenceReportPath = Join-Path $reportOutputPath 'differences-only.txt'
+$similarityReportPath = Join-Path $reportOutputPath 'similarities-only.txt'
+$fullReportLines | Set-Content -Path $fullReportPath -Encoding utf8
+$differenceReportLines | Set-Content -Path $differenceReportPath -Encoding utf8
+$similarityReportLines | Set-Content -Path $similarityReportPath -Encoding utf8
 
 Write-Host ''
 Write-Host 'Driver Snapshot Compare' -ForegroundColor Green
@@ -1223,3 +1668,9 @@ if ($beforeSetupApi -and $afterSetupApi) {
 else {
     Write-Host 'SetupAPI metadata was not available in both snapshots.'
 }
+
+Write-Section -Title 'Compare Reports'
+Write-Host "Folder              : $reportOutputPath" -ForegroundColor DarkGray
+Write-Host "Full report         : $fullReportPath" -ForegroundColor DarkGray
+Write-Host "Differences only    : $differenceReportPath" -ForegroundColor DarkGray
+Write-Host "Similarities only   : $similarityReportPath" -ForegroundColor DarkGray

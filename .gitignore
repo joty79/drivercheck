@@ -2,3 +2,4 @@ gemini chat.txt
 .gemini
 snapshots/
 _snapshotstest/
+compare-output/

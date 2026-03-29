@@ -654,3 +654,96 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     4. Interactive save flow should let the operator choose mode explicitly instead of silently changing behavior.
 *   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `README.md`, `TODO.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation; elevated `Full` timing run (~`52s` total, ~`49s` `PnP`); elevated `Quick` timing run (~`6.36s` total, ~`0.83s` `PnP`); metadata and `pnp-devices.json` structure review for `Quick` output
+
+*   **Date:** 2026-03-29
+*   **Problem:** The live terminal compare was useful, but humans still lacked persisted compare artifacts that cleanly separated "everything", "differences only", and "similarities only" for later review.
+*   **Root Cause:** `Compare-DriverSnapshots.ps1` only rendered to the console and did not preserve a report set on disk.
+*   **Guardrail:**
+    1. Every snapshot compare should write a dedicated compare-output folder, not just print to the terminal.
+    2. Keep three human-readable text artifacts per compare: `full-report.txt`, `differences-only.txt`, and `similarities-only.txt`.
+    3. Report headers should include both snapshot paths and the `SnapshotMode` (`Quick` / `Full`) of each side so later review can interpret missing deep fields correctly.
+    4. `full-report.txt` must remain a true single report, not a duplicated-header concatenation artifact.
+*   **Files affected:** `internal\Compare-DriverSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; non-admin compare run against `Multi-BeforeInstall 03-29-2026 - 06.20` vs `Multi-fast-AfterInstall 03-29-2026 - 19.35`; verified generated compare-output folder and the three report files
+
+*   **Date:** 2026-03-29
+*   **Problem:** For `Full` vs `Quick` debugging, a plain text diff between two generated report files was too noisy and did not preserve the section structure that makes driver evidence readable.
+*   **Root Cause:** Generic diff tools do not know which lines are section headers, which lines are top-level item blocks, and which indented lines belong to those items.
+*   **Guardrail:**
+    1. For generated repo reports, prefer a lightweight structure-aware compare helper over raw line diff when section readability matters.
+    2. Use explicit `Base` semantics and name the output files by meaning (`missing-vs-base`, `extra-vs-base`) instead of left/right editor position.
+    3. Preserve section headers and keep top-level item lines together with their indented detail lines.
+    4. Keep the helper profile-driven (`DriverCheck` / `Generic`) instead of trying to overfit a rigid universal diff engine.
+*   **Files affected:** `internal\Compare-StructuredTextReport.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; non-admin runtime compare of `differences-only.txt` from `Multi-slow-AfterInstall` vs `Multi-fast-AfterInstall`; verified `missing-vs-base.txt` and `extra-vs-base.txt` generation under `compare-output\structured-text`
+
+*   **Date:** 2026-03-29
+*   **Problem:** A helper that is useful only from CLI is easy to forget, especially in this repo where the main launcher is the intended daily entry point.
+*   **Root Cause:** `Compare-StructuredTextReport.ps1` existed as a standalone internal tool, but not yet as a visible launcher action with the same picker-driven UX as the rest of `DriverCheck`.
+*   **Guardrail:**
+    1. If an internal helper becomes part of the normal investigation/debug workflow, expose it through `DriverCheck.ps1`.
+    2. New launcher-integrated tools should reuse the same visual/menu conventions (`ESC`, arrows, number shortcuts, selection preview) instead of inventing a different UI.
+    3. For report-to-report compare flows, prefer human-readable report pickers over raw path typing.
+*   **Files affected:** `DriverCheck.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`; non-admin runtime validation of the internal structured comparer path remained green
+
+*   **Date:** 2026-03-29
+*   **Problem:** The first launcher version of `Compare Structured Reports` was technically functional but still unreadable, because users had to parse storage-oriented compare-output names and then re-select a report file that the workflow already knew it wanted.
+*   **Root Cause:** The launcher exposed folder/file storage details instead of semantic compare context from the generated report itself (`Before` / `After` snapshot labels).
+*   **Guardrail:**
+    1. Launcher-facing structured compare flows should display semantic compare labels derived from the source compare report, not raw compare-output folder names.
+    2. When the workflow is specifically about report differences, default to `differences-only.txt` and remove the extra file picker.
+    3. Human readability in the picker is more important than mirroring the on-disk storage name.
+    4. If the operator is expected to inspect compare results immediately, prefer an in-terminal pretty viewer over forcing raw txt opening as the first review step.
+*   **Files affected:** `DriverCheck.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`; launcher structured compare flow updated to derive labels from `full-report.txt` and snapshot metadata
+
+*   **Date:** 2026-03-29
+*   **Problem:** The new compare-output and structured-report picker flows exposed two UI/ops issues at once: raw compare folder names could become absurdly long on Windows, and some redraw-based menus could occasionally stack duplicate frames instead of repainting cleanly.
+*   **Root Cause:** Compare report folders originally reused too much raw snapshot naming, while a few arrow-key redraw menus still relied on host behavior that breaks when lines wrap or the redraw region is not explicitly reserved.
+*   **Guardrail:**
+    1. Generated compare-output folder names must stay short and path-safe; prefer compact semantic tokens (`Case-Stage`) plus a short timestamp over full snapshot folder names.
+    2. Reusable redraw menus must truncate visible lines to the current console width and reserve their paint region before entering the key loop.
+    3. If a multiline function call in launcher UI code spans parameters across lines, keep explicit continuation markers so named parameters do not accidentally execute as standalone commands.
+*   **Files affected:** `internal\Compare-DriverSnapshots.ps1`, `internal\Save-DriverSnapshot.ps1`, `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation for launcher/save/compare scripts; non-admin compare run verified new short compare-output folder name; non-admin structured compare helper remained runnable
+
+*   **Date:** 2026-03-29
+*   **Problem:** Menu `7` (`Compare Structured Reports`) could still show the same snapshot compare combo multiple times because older timestamped compare-output folders remained on disk.
+*   **Root Cause:** The structured report picker originally deduped too literally and still traversed the `compare-output\structured-text` subtree, so historical reruns of the same semantic compare could leak into the launcher menu.
+*   **Guardrail:**
+    1. Structured compare pickers must ignore generated helper-output subtrees such as `compare-output\structured-text`.
+    2. Deduplication for compare reports should prefer semantic identity (`Before` label + `After` label + mode) over raw folder name/path, because folder names may change across storage formats.
+    3. When historical reruns exist for the same semantic compare, show only the newest entry in launcher-facing menus.
+*   **Files affected:** `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`; non-admin probe over `compare-output` confirmed only the newest `Slow` and newest `Fast` compare identities remain after semantic dedupe
+
+*   **Date:** 2026-03-29
+*   **Problem:** The launcher `Delete Snapshot` confirm screen showed the correct `[ENTER] Delete snapshot` instruction, but pressing `ENTER` could appear to do nothing.
+*   **Root Cause:** The key loop relied on ambiguous `switch`/`while` flow control instead of an explicit post-key exit check, so the confirmation state was set but the loop did not reliably advance to the actual `Remove-Item` path.
+*   **Guardrail:**
+    1. For PowerShell key-driven confirmation prompts, do not rely on implicit `break` behavior inside nested `switch` + `while` structures.
+    2. After mutating a confirmation state inside a key handler, use an explicit outer-loop exit check before leaving the input loop.
+    3. Destructive prompts should keep the input path simple and deterministic: `ENTER` confirms, `ESC` cancels, and both paths should be obvious in code review.
+*   **Files affected:** `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`; non-admin code-path inspection of the launcher delete confirmation loop
+
+*   **Date:** 2026-03-29
+*   **Problem:** Once compare reports became part of the normal launcher workflow, stale compare-output folders were hard to clean up because deletion existed only for snapshots, not for report pickers.
+*   **Root Cause:** Menu `7` originally treated compare reports as read-only picker items, even though they are disposable generated artifacts and benefit from inline cleanup.
+*   **Guardrail:**
+    1. Launcher pickers for generated artifacts may support inline deletion when the artifact lives under a known safe root.
+    2. Inline delete should act on the currently highlighted item, use the same `ENTER` confirm / `ESC` cancel pattern, and then refresh the same picker instead of bouncing the user through another menu.
+    3. For compare report cleanup, restrict deletion to paths under the configured `compare-output` root.
+*   **Files affected:** `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`
+
+*   **Date:** 2026-03-29
+*   **Problem:** Deleting compare reports inline from menu `7` could leave a mixed screen and stale deleted report references, especially when one of only two reports was removed.
+*   **Root Cause:** The picker refreshed only its local in-memory list, while the surrounding structured compare flow still held an older report list and selection state built before the deletion.
+*   **Guardrail:**
+    1. If a picker supports inline deletion, successful delete must restart the picker screen cleanly instead of continuing to paint inside the old frame.
+    2. After a destructive action that changes the underlying folder set, re-read the current items from disk before building the next step of the workflow.
+    3. Before launching report-to-report compare logic, validate that both selected source files still exist and fail gracefully if one was deleted during the same menu flow.
+*   **Files affected:** `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`
