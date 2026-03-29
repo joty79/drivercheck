@@ -747,3 +747,13 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. Before launching report-to-report compare logic, validate that both selected source files still exist and fail gracefully if one was deleted during the same menu flow.
 *   **Files affected:** `DriverCheck.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation of `DriverCheck.ps1`
+
+*   **Date:** 2026-03-30
+*   **Problem:** The `Snapshot mode` submenu in `Save Snapshot` kept producing stacked redraw artifacts in Windows Terminal, even after multiple cursor-reset and repaint tweaks.
+*   **Root Cause:** The redraw-based arrow menu for `Snapshot mode` was host-fragile and could still desync after previous interactive writes, so more micro-fixes were not a reliable use of time.
+*   **Guardrail:**
+    1. If a specific interactive submenu remains terminal-fragile after repeated repaint fixes, stop polishing the redraw path and replace it with a stable text prompt.
+    2. Prefer robust `1/2/ESC` selection over animated cursor UI for narrow, low-choice prompts where reliability matters more than visual consistency.
+    3. Keep arrow-key menus where they are stable, but do not force redraw-based UI into every branch of the workflow.
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`

@@ -116,6 +116,19 @@ function Read-HostTrimmed {
     return ([string]$value).Trim()
 }
 
+function Reset-InteractiveMenuSurface {
+    if ([Console]::IsInputRedirected) {
+        return
+    }
+
+    try {
+        Clear-Host
+    }
+    catch {
+        # Best-effort UI reset only.
+    }
+}
+
 function Test-IsEscapeInput {
     param(
         [AllowEmptyString()]
@@ -360,102 +373,24 @@ function Get-SnapshotModeSelection {
         }
     )
 
-    if ([Console]::IsInputRedirected) {
-        Write-Host ''
-        Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
-        Write-Host '---------------------' -ForegroundColor Cyan
-        foreach ($item in $modeItems) {
-            Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
-        }
-        Write-Host '[ESC] Cancel snapshot save' -ForegroundColor DarkGray
+    Reset-InteractiveMenuSurface
+    Write-Host ''
+    Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
+    Write-Host '---------------------' -ForegroundColor Cyan
+    foreach ($item in $modeItems) {
+        Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
+    }
+    Write-Host '[ESC] Cancel snapshot save' -ForegroundColor DarkGray
 
-        $choice = Read-HostTrimmed -Prompt 'Mode'
-        if (Test-IsEscapeInput -Value $choice) {
-            return $script:CancelInputToken
-        }
-
-        switch ($choice) {
-            '1' { return 'Quick' }
-            '2' { return 'Full' }
-            default { return 'Quick' }
-        }
+    $choice = Read-HostTrimmed -Prompt 'Mode'
+    if (Test-IsEscapeInput -Value $choice) {
+        return $script:CancelInputToken
     }
 
-    $eraseLine = '{0}[K' -f [char]27
-    $selectedIndex = 0
-
-    function Write-SnapshotModeFrame {
-        [Console]::SetCursorPosition(0, $menuTop)
-        for ($i = 0; $i -lt $modeItems.Count; $i++) {
-            $item = $modeItems[$i]
-            $isSelected = $i -eq $selectedIndex
-            $prefix = if ($isSelected) { '❯' } else { ' ' }
-            $line = Get-ConsoleSafeText -Text ("{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label)
-            $color = if ($isSelected) { 'White' } else { $item.Color }
-            Write-Host "$line$eraseLine" -ForegroundColor $color
-        }
-        Write-Host ((Get-ConsoleSafeText -Text '[ENTER] Select highlighted mode') + $eraseLine) -ForegroundColor DarkGray
-        Write-Host ((Get-ConsoleSafeText -Text '[ESC] Cancel snapshot save') + $eraseLine) -ForegroundColor DarkGray
-    }
-
-    [Console]::CursorVisible = $false
-    try {
-        Write-Host ''
-        Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
-        Write-Host '---------------------' -ForegroundColor Cyan
-        Write-Host ''
-        $menuTop = [Console]::CursorTop
-        $frameHeight = $modeItems.Count + 2
-        for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
-            Write-Host ''
-        }
-        [Console]::SetCursorPosition(0, $menuTop)
-
-        while ($true) {
-            Write-SnapshotModeFrame
-
-            $key = [Console]::ReadKey($true)
-            switch ($key.Key) {
-                'UpArrow' {
-                    if ($selectedIndex -gt 0) {
-                        $selectedIndex--
-                    }
-                }
-                'DownArrow' {
-                    if ($selectedIndex -lt ($modeItems.Count - 1)) {
-                        $selectedIndex++
-                    }
-                }
-                'Enter' {
-                    return $modeItems[$selectedIndex].Value
-                }
-                'Escape' {
-                    return $script:CancelInputToken
-                }
-                default {
-                    $typedKey = [string]$key.KeyChar
-                    if (-not [string]::IsNullOrWhiteSpace($typedKey)) {
-                        $matchedIndex = -1
-                        for ($i = 0; $i -lt $modeItems.Count; $i++) {
-                            if ($modeItems[$i].Key -eq $typedKey) {
-                                $matchedIndex = $i
-                                break
-                            }
-                        }
-
-                        if ($matchedIndex -ge 0) {
-                            $selectedIndex = $matchedIndex
-                            Write-SnapshotModeFrame
-                            Start-Sleep -Milliseconds 90
-                            return $modeItems[$selectedIndex].Value
-                        }
-                    }
-                }
-            }
-        }
-    }
-    finally {
-        [Console]::CursorVisible = $true
+    switch ($choice) {
+        '1' { return 'Quick' }
+        '2' { return 'Full' }
+        default { return 'Quick' }
     }
 }
 

@@ -132,6 +132,7 @@
 - Το `Delete Snapshot` confirm prompt στο launcher εκτελεί πλέον σωστά τη διαγραφή με `ENTER`, αντί να μένει αδρανές μέσα στο key loop.
 - Το `Compare Structured Reports` picker υποστηρίζει πλέον inline διαγραφή του highlighted compare report με `D` ή `Delete`, με `ENTER/ESC` confirmation χωρίς να βγαίνεις από το ίδιο menu flow.
 - Το `Compare Structured Reports` flow κάνει πλέον σωστό refresh μετά από delete μέσα στο picker και ξαναδιαβάζει τα compare reports από το disk πριν προχωρήσει, ώστε να μη μένουν mixed screens ή stale deleted paths.
+- Το `Save Snapshot` flow χρησιμοποιεί πλέον stable text prompt για το `Snapshot mode` αντί για arrow-redraw menu, επειδή το προηγούμενο redraw pattern αποδείχθηκε host-fragile στο Windows Terminal.
 
 ## 2026-03-18
 
