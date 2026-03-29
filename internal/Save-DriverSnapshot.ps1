@@ -129,6 +129,36 @@ function Reset-InteractiveMenuSurface {
     }
 }
 
+function Clear-WizardSectionFromTop {
+    param(
+        [int]$Top
+    )
+
+    if ([Console]::IsInputRedirected) {
+        return
+    }
+
+    try {
+        $bufferWidth = [Console]::BufferWidth
+        $windowHeight = [Console]::WindowHeight
+        $eraseLine = '{0}[K' -f [char]27
+        $lineCount = [Math]::Max(1, $windowHeight - $Top)
+
+        [Console]::CursorVisible = $false
+        [Console]::SetCursorPosition(0, $Top)
+        for ($i = 0; $i -lt $lineCount; $i++) {
+            Write-Host $eraseLine
+        }
+        [Console]::SetCursorPosition(0, $Top)
+    }
+    catch {
+        # Best-effort UI cleanup only.
+    }
+    finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
 function Test-IsEscapeInput {
     param(
         [AllowEmptyString()]
@@ -212,14 +242,13 @@ function Get-StageSelection {
         [pscustomobject]@{ Key = '6'; Label = 'Custom stage'; Color = 'Gray'; Value = '__CUSTOM__' }
     )
 
-    if ([Console]::IsInputRedirected) {
+    while ($true) {
         Write-Host ''
         Write-Host 'Διάλεξε Stage για το snapshot' -ForegroundColor Cyan
         Write-Host '----------------------------' -ForegroundColor Cyan
         foreach ($item in $stageItems) {
             Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
         }
-        Write-Host '[ENTER] Leave empty (not recommended)' -ForegroundColor DarkGray
         Write-Host '[ESC] Cancel snapshot save' -ForegroundColor DarkGray
 
         $choice = Read-HostTrimmed -Prompt 'Stage'
@@ -236,122 +265,28 @@ function Get-StageSelection {
             '6' {
                 $customStage = Read-HostTrimmed -Prompt 'Custom Stage'
                 if (Test-IsEscapeInput -Value $customStage) {
-                    return $script:CancelInputToken
+                    continue
                 }
 
-                return $customStage
+                if (-not [string]::IsNullOrWhiteSpace($customStage)) {
+                    return $customStage
+                }
+
+                continue
             }
             default {
-                return ''
+                Write-Host 'Δώσε 1-6 ή πάτησε ESC για ακύρωση.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
             }
         }
-    }
-
-    $eraseLine = '{0}[K' -f [char]27
-    $selectedIndex = 0
-
-    function Write-StageMenuFrame {
-        [Console]::SetCursorPosition(0, $menuTop)
-        for ($i = 0; $i -lt $stageItems.Count; $i++) {
-            $item = $stageItems[$i]
-            $isSelected = $i -eq $selectedIndex
-            $prefix = if ($isSelected) { '❯' } else { ' ' }
-            $line = Get-ConsoleSafeText -Text ("{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label)
-            $color = if ($isSelected) { 'White' } else { $item.Color }
-            Write-Host "$line$eraseLine" -ForegroundColor $color
-        }
-        Write-Host ((Get-ConsoleSafeText -Text '[ENTER] Select highlighted stage') + $eraseLine) -ForegroundColor DarkGray
-        Write-Host ((Get-ConsoleSafeText -Text '[ESC] Cancel snapshot save') + $eraseLine) -ForegroundColor DarkGray
-    }
-
-    [Console]::CursorVisible = $false
-    try {
-        Write-Host ''
-        Write-Host 'Διάλεξε Stage για το snapshot' -ForegroundColor Cyan
-        Write-Host '----------------------------' -ForegroundColor Cyan
-        Write-Host ''
-        $menuTop = [Console]::CursorTop
-        $frameHeight = $stageItems.Count + 2
-        for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
-            Write-Host ''
-        }
-        [Console]::SetCursorPosition(0, $menuTop)
-
-        while ($true) {
-            Write-StageMenuFrame
-
-            $key = [Console]::ReadKey($true)
-            switch ($key.Key) {
-                'UpArrow' {
-                    if ($selectedIndex -gt 0) {
-                        $selectedIndex--
-                    }
-                }
-                'DownArrow' {
-                    if ($selectedIndex -lt ($stageItems.Count - 1)) {
-                        $selectedIndex++
-                    }
-                }
-                'Enter' {
-                    $selectedItem = $stageItems[$selectedIndex]
-                    if ($selectedItem.Value -eq '__CUSTOM__') {
-                        [Console]::CursorVisible = $true
-                        $customStage = Read-HostTrimmed -Prompt 'Custom Stage'
-                        [Console]::CursorVisible = $false
-                        if (Test-IsEscapeInput -Value $customStage) {
-                            return $script:CancelInputToken
-                        }
-
-                        return $customStage
-                    }
-
-                    return $selectedItem.Value
-                }
-                'Escape' {
-                    return $script:CancelInputToken
-                }
-                default {
-                    $typedKey = [string]$key.KeyChar
-                    if (-not [string]::IsNullOrWhiteSpace($typedKey)) {
-                        $matchedIndex = -1
-                        for ($i = 0; $i -lt $stageItems.Count; $i++) {
-                            if ($stageItems[$i].Key -eq $typedKey) {
-                                $matchedIndex = $i
-                                break
-                            }
-                        }
-
-                        if ($matchedIndex -ge 0) {
-                            $selectedIndex = $matchedIndex
-                            Write-StageMenuFrame
-                            Start-Sleep -Milliseconds 90
-                            $matchedItem = $stageItems[$selectedIndex]
-                            if ($matchedItem.Value -eq '__CUSTOM__') {
-                                [Console]::CursorVisible = $true
-                                $customStage = Read-HostTrimmed -Prompt 'Custom Stage'
-                                [Console]::CursorVisible = $false
-                                if (Test-IsEscapeInput -Value $customStage) {
-                                    return $script:CancelInputToken
-                                }
-
-                                return $customStage
-                            }
-
-                            return $matchedItem.Value
-                        }
-                    }
-                }
-            }
-        }
-    }
-    finally {
-        [Console]::CursorVisible = $true
     }
 }
 
 function Get-SnapshotModeSelection {
     param(
-        [string]$CurrentMode
+        [string]$CurrentMode,
+        [string]$SelectedStage
     )
 
     if (-not [string]::IsNullOrWhiteSpace($CurrentMode)) {
@@ -373,14 +308,16 @@ function Get-SnapshotModeSelection {
         }
     )
 
-    Reset-InteractiveMenuSurface
     Write-Host ''
+    if (-not [string]::IsNullOrWhiteSpace($SelectedStage)) {
+        Write-Host ("Selected Stage : {0}" -f $SelectedStage) -ForegroundColor DarkGray
+    }
     Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
     Write-Host '---------------------' -ForegroundColor Cyan
     foreach ($item in $modeItems) {
         Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
     }
-    Write-Host '[ESC] Cancel snapshot save' -ForegroundColor DarkGray
+    Write-Host '[ESC] Back to Stage selection' -ForegroundColor DarkGray
 
     $choice = Read-HostTrimmed -Prompt 'Mode'
     if (Test-IsEscapeInput -Value $choice) {
@@ -414,25 +351,40 @@ function Initialize-SnapshotContext {
         }
     }
 
-    $selectedStage = Get-StageSelection -CurrentStage $Stage
-    if ($selectedStage -eq $script:CancelInputToken) {
-        Write-Host 'Ακύρωση αποθήκευσης snapshot από τον χρήστη.' -ForegroundColor Yellow
-        $script:SnapshotSetupCanceled = $true
-        $global:DriverCheck_LastSnapshotSaveCanceled = $true
-        return
+    $wizardSectionTop = $null
+    if (-not [Console]::IsInputRedirected) {
+        try {
+            $wizardSectionTop = [Console]::CursorTop
+        }
+        catch {
+            $wizardSectionTop = $null
+        }
     }
 
-    $script:Stage = $selectedStage
+    while ($true) {
+        if ($null -ne $wizardSectionTop) {
+            Clear-WizardSectionFromTop -Top $wizardSectionTop
+        }
 
-    $selectedMode = Get-SnapshotModeSelection -CurrentMode $SnapshotMode
-    if ($selectedMode -eq $script:CancelInputToken) {
-        Write-Host 'Ακύρωση αποθήκευσης snapshot από τον χρήστη.' -ForegroundColor Yellow
-        $script:SnapshotSetupCanceled = $true
-        $global:DriverCheck_LastSnapshotSaveCanceled = $true
-        return
+        $selectedStage = Get-StageSelection -CurrentStage $Stage
+        if ($selectedStage -eq $script:CancelInputToken) {
+            Write-Host 'Ακύρωση αποθήκευσης snapshot από τον χρήστη.' -ForegroundColor Yellow
+            $script:SnapshotSetupCanceled = $true
+            $global:DriverCheck_LastSnapshotSaveCanceled = $true
+            return
+        }
+
+        $script:Stage = $selectedStage
+
+        $selectedMode = Get-SnapshotModeSelection -CurrentMode $SnapshotMode -SelectedStage $script:Stage
+        if ($selectedMode -eq $script:CancelInputToken) {
+            $Stage = ''
+            continue
+        }
+
+        $script:SnapshotMode = $selectedMode
+        break
     }
-
-    $script:SnapshotMode = $selectedMode
 
     if ([string]::IsNullOrWhiteSpace($CaseName) -and [string]::IsNullOrWhiteSpace($Stage)) {
         Write-Host '⚠️ IMPORTANT' -ForegroundColor Yellow

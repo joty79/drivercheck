@@ -757,3 +757,33 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     3. Keep arrow-key menus where they are stable, but do not force redraw-based UI into every branch of the workflow.
 *   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`
+
+*   **Date:** 2026-03-30
+*   **Problem:** Even after human-readable compare labels moved into the launcher UI, long compare-output folder names could still be annoying or even fail in Explorer/VM copy workflows because Windows path handling is still fragile in practice.
+*   **Root Cause:** Storage naming still carried too much semantic text, even though the actual human-facing selection logic already came from report metadata and not from folder names.
+*   **Guardrail:**
+    1. Keep compare-output storage names short and opaque if the launcher/report metadata already provides the readable context.
+    2. Prefer compact stable ids (for example `cmp__<short-id>`) over long semantic folder names for generated artifacts.
+    3. Use the on-disk folder name for storage only; use report metadata for human-readable UI labels.
+*   **Files affected:** `internal\Compare-DriverSnapshots.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Compare-DriverSnapshots.ps1`
+
+*   **Date:** 2026-03-30
+*   **Problem:** In sequential wizard-style prompts, `ESC` could feel wrong when it always aborted the whole flow instead of backing up one step.
+*   **Root Cause:** The flow treated all cancel tokens the same, even in cases where the operator was clearly still inside a multi-step decision sequence.
+*   **Guardrail:**
+    1. In sequential same-screen wizard flows, `ESC` should normally cancel the current step and return to the previous step, not eject the user from the whole workflow.
+    2. Reserve “cancel the whole flow / return to main menu” behavior for the top-most prompt in the sequence.
+    3. Prompt text should say what `ESC` actually does (`Back to Stage selection`, not generic `Cancel snapshot save`).
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`
+
+*   **Date:** 2026-03-30
+*   **Problem:** The `Save Snapshot` flow had repeated repaint failures in Windows Terminal around `Stage` / `Snapshot mode`, and keeping mixed UI paradigms there was costing more time than it was worth.
+*   **Root Cause:** Redraw-based arrow menus were being used in a narrow wizard path that really only needed a few deterministic choices, so the UI complexity was higher than the value of the animation.
+*   **Guardrail:**
+    1. For short sequential setup wizards, prefer a fully stable text-based prompt sequence over a hybrid redraw UI if the redraw path has already proven host-fragile.
+    2. Keep the interaction model consistent inside the same wizard; do not mix animated cursor menus with fallback text prompts unless there is a strong reason.
+    3. Save the richer arrow-key UX for larger pickers where it materially improves navigation.
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`

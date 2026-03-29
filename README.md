@@ -317,7 +317,7 @@ pwsh -ExecutionPolicy Bypass -File .\internal\Compare-DriverSnapshots.ps1 `
   `full-report.txt`,
   `differences-only.txt`,
   `similarities-only.txt`
-- το compare-output folder naming είναι πλέον πιο compact (`cmp__...__vs__... <timestamp>`) ώστε να αποφεύγονται άσκοπα path-length προβλήματα στα Windows
+- το compare-output folder naming είναι πλέον πολύ πιο compact (`cmp__<short-id>`), ώστε να αποφεύγονται path-length προβλήματα σε Windows copy/move/VM workflows
 - τα report files κρατούν και το `SnapshotMode` (`Quick` / `Full`) για κάθε πλευρά, ώστε να είναι πιο ξεκάθαρο πόσο deep ήταν το source data
 - αγνοεί γνωστό Hyper-V / remote-session noise στα `PnP` results
 - κρύβει benign `BCD` noise όπως explicit `testsigning No`

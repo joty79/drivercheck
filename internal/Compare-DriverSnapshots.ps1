@@ -916,6 +916,26 @@ function Get-CompareReportToken {
     return $safeToken
 }
 
+function Get-ShortStableCompareId {
+    param(
+        [string]$BeforeSnapshotPath,
+        [string]$AfterSnapshotPath
+    )
+
+    $identityText = '{0}|{1}' -f ($BeforeSnapshotPath ?? ''), ($AfterSnapshotPath ?? '')
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($identityText)
+        $hashBytes = $sha.ComputeHash($bytes)
+    }
+    finally {
+        $sha.Dispose()
+    }
+
+    $hashText = [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
+    return $hashText.Substring(0, 10)
+}
+
 function Add-ReportLine {
     param(
         [System.Collections.Generic.List[string]]$Lines,
@@ -1000,9 +1020,8 @@ function New-CompareReportPath {
         [string]$AfterSnapshotPath
     )
 
-    $beforeName = Get-CompareReportToken -SnapshotPath $BeforeSnapshotPath -FallbackLabel 'before'
-    $afterName = Get-CompareReportToken -SnapshotPath $AfterSnapshotPath -FallbackLabel 'after'
-    $folderName = 'cmp__{0}__vs__{1}' -f $beforeName, $afterName
+    $compareId = Get-ShortStableCompareId -BeforeSnapshotPath $BeforeSnapshotPath -AfterSnapshotPath $AfterSnapshotPath
+    $folderName = 'cmp__{0}' -f $compareId
     $targetPath = Join-Path $RootPath $folderName
     New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
     return $targetPath

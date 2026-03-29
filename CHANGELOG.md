@@ -133,6 +133,9 @@
 - Το `Compare Structured Reports` picker υποστηρίζει πλέον inline διαγραφή του highlighted compare report με `D` ή `Delete`, με `ENTER/ESC` confirmation χωρίς να βγαίνεις από το ίδιο menu flow.
 - Το `Compare Structured Reports` flow κάνει πλέον σωστό refresh μετά από delete μέσα στο picker και ξαναδιαβάζει τα compare reports από το disk πριν προχωρήσει, ώστε να μη μένουν mixed screens ή stale deleted paths.
 - Το `Save Snapshot` flow χρησιμοποιεί πλέον stable text prompt για το `Snapshot mode` αντί για arrow-redraw menu, επειδή το προηγούμενο redraw pattern αποδείχθηκε host-fragile στο Windows Terminal.
+- Τα compare-output folders του `Compare-DriverSnapshots.ps1` έγιναν πλέον ultra-short (`cmp__<short-id>`) αντί για semi-semantic long names, ώστε να αποφεύγονται Explorer/VM copy προβλήματα από υπερβολικό path length.
+- Το `Save Snapshot` wizard ακολουθεί πλέον step-back behavior: `ESC` στο `Snapshot mode` δεν πετάει έξω από όλο το save flow, αλλά επιστρέφει στο προηγούμενο step (`Stage`).
+- Το `Save Snapshot` wizard έγινε πλέον πλήρως stable text-based sequence για `Stage` και `Snapshot mode`, αντί για redraw arrow menus, ώστε να κλείσουν οριστικά τα Windows Terminal repaint issues στο συγκεκριμένο flow.
 
 ## 2026-03-18
 
