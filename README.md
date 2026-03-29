@@ -235,23 +235,28 @@ pwsh -ExecutionPolicy Bypass -File .\DriverCheck.ps1
 # Direct snapshot engine
 pwsh -ExecutionPolicy Bypass -File .\internal\Save-DriverSnapshot.ps1 -CaseName HaspTest -Stage BeforeInstall
 pwsh -ExecutionPolicy Bypass -File .\internal\Save-DriverSnapshot.ps1 -CaseName HaspTest -Stage AfterInstall
+pwsh -ExecutionPolicy Bypass -File .\internal\Save-DriverSnapshot.ps1 -CaseName HaspTest -Stage AfterInstall -SnapshotMode Quick
 pwsh -ExecutionPolicy Bypass -File .\internal\Save-DriverSnapshot.ps1 -Name CustomLabel -FocusTerm MulttKey,hasp
 ```
 
-| Parameter     | Type       | Default            | Description                                                                               |
-| ------------- | ---------- | ------------------ | ----------------------------------------------------------------------------------------- |
-| `-Name`       | `string`   | auto               | Explicit label για το snapshot folder. Αν δοθεί, έχει προτεραιότητα από `CaseName/Stage`. |
-| `-CaseName`   | `string`   | empty              | Group label για ένα συγκεκριμένο investigation/test cycle.                                |
-| `-Stage`      | `string`   | empty              | Stage label όπως `BeforeInstall`, `AfterInstall`, `AfterRemove`.                          |
-| `-OutputRoot` | `string`   | `.\snapshots`      | Root folder όπου αποθηκεύονται τα snapshots.                                              |
-| `-FocusTerm`  | `string[]` | `MulttKey`, `hasp` | Terms για focused file, service και registry evidence search.                             |
+| Parameter       | Type       | Default            | Description                                                                                 |
+| --------------- | ---------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| `-Name`         | `string`   | auto               | Explicit label για το snapshot folder. Αν δοθεί, έχει προτεραιότητα από `CaseName/Stage`.   |
+| `-CaseName`     | `string`   | empty              | Group label για ένα συγκεκριμένο investigation/test cycle.                                  |
+| `-Stage`        | `string`   | empty              | Stage label όπως `BeforeInstall`, `AfterInstall`, `AfterRemove`.                            |
+| `-SnapshotMode` | `string`   | interactive / Full | `Quick` για faster καθημερινό save, `Full` για deepest `PnP` enrichment.                    |
+| `-OutputRoot`   | `string`   | `.\snapshots`      | Root folder όπου αποθηκεύονται τα snapshots.                                                |
+| `-FocusTerm`    | `string[]` | `MulttKey`, `hasp` | Terms για focused file, service και registry evidence search.                               |
 
 ### Save Notes
 
 - αν δεν δώσεις `-Name`, το script σε ρωτά πλέον για `Case Name` και `Stage` ώστε να μη γεμίζει το repo με άχρηστα generic `Snapshot` labels
+- το save flow ρωτά πλέον και για `Snapshot mode`: `Quick` για faster καθημερινό capture ή `Full` για deeper forensic `PnP` details
 - τα auto-generated snapshot folders γράφονται πλέον σε πιο human-friendly μορφή όπως `Multi-BeforeInstall 03-29-2026 - 01.45` αντί για machine-style timestamp prefix
 - αν αφήσεις και τα δύο κενά, συνεχίζει ακόμα να σώζει snapshot, αλλά σε προειδοποιεί ότι θα παραμείνει unlabeled
 - τα interactive `Case Name` / `Stage` prompts δέχονται πλέον και `ESC` για clean cancel του snapshot save flow
+- κάθε snapshot γράφει πλέον και `snapshot-timings.json`, δείχνει live per-section timing feedback και στο τέλος εμφανίζει τα `Slowest sections`
+- σε real host profiling, το μεγάλο bottleneck αποδείχθηκε το `PnP` enrichment του `Full` mode· το `Quick` mode κόβει ακριβώς αυτό το ακριβό path και έριξε το συνολικό save από περίπου `52s` σε περίπου `6s` στο test host
 
 <a id="compare-driver-snapshots"></a>
 

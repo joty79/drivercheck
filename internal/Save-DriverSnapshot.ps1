@@ -3,6 +3,7 @@ param(
     [string]$Name,
     [string]$CaseName,
     [string]$Stage,
+    [string]$SnapshotMode,
     [string]$OutputRoot = (Join-Path $PSScriptRoot 'snapshots'),
     [string[]]$FocusTerm = @('MulttKey', 'hasp')
 )
@@ -32,6 +33,10 @@ function Get-SelfElevationArgumentList {
 
     if (-not [string]::IsNullOrWhiteSpace($Stage)) {
         $argumentList += @('-Stage', $Stage)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SnapshotMode)) {
+        $argumentList += @('-SnapshotMode', $SnapshotMode)
     }
 
     if (-not [string]::IsNullOrWhiteSpace($OutputRoot)) {
@@ -127,6 +132,23 @@ function Test-IsEscapeInput {
     }
 
     return $raw.Trim() -match '^(?i:esc|escape)$'
+}
+
+function Resolve-SnapshotMode {
+    param(
+        [string]$Mode,
+        [string]$DefaultMode = 'Full'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Mode)) {
+        return $DefaultMode
+    }
+
+    switch -Regex ($Mode.Trim()) {
+        '^(?i:quick)$' { return 'Quick' }
+        '^(?i:full)$' { return 'Full' }
+        default { return $DefaultMode }
+    }
 }
 
 function Get-StageSelection {
@@ -279,8 +301,127 @@ function Get-StageSelection {
     }
 }
 
+function Get-SnapshotModeSelection {
+    param(
+        [string]$CurrentMode
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($CurrentMode)) {
+        return (Resolve-SnapshotMode -Mode $CurrentMode -DefaultMode 'Full')
+    }
+
+    $modeItems = @(
+        [pscustomobject]@{
+            Key = '1'
+            Label = 'Quick snapshot (faster, lighter PnP details)'
+            Color = 'Green'
+            Value = 'Quick'
+        },
+        [pscustomobject]@{
+            Key = '2'
+            Label = 'Full snapshot (slower, deepest PnP details)'
+            Color = 'Yellow'
+            Value = 'Full'
+        }
+    )
+
+    if ([Console]::IsInputRedirected) {
+        Write-Host ''
+        Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
+        Write-Host '---------------------' -ForegroundColor Cyan
+        foreach ($item in $modeItems) {
+            Write-Host ("[{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor $item.Color
+        }
+        Write-Host '[ESC] Cancel snapshot save' -ForegroundColor DarkGray
+
+        $choice = Read-HostTrimmed -Prompt 'Mode'
+        if (Test-IsEscapeInput -Value $choice) {
+            return $script:CancelInputToken
+        }
+
+        switch ($choice) {
+            '1' { return 'Quick' }
+            '2' { return 'Full' }
+            default { return 'Quick' }
+        }
+    }
+
+    $eraseLine = '{0}[K' -f [char]27
+    $selectedIndex = 0
+
+    function Write-SnapshotModeFrame {
+        [Console]::SetCursorPosition(0, $menuTop)
+        for ($i = 0; $i -lt $modeItems.Count; $i++) {
+            $item = $modeItems[$i]
+            $isSelected = $i -eq $selectedIndex
+            $prefix = if ($isSelected) { '❯' } else { ' ' }
+            $line = "{0} [{1}] {2}" -f $prefix, $item.Key, $item.Label
+            $color = if ($isSelected) { 'White' } else { $item.Color }
+            Write-Host "$line$eraseLine" -ForegroundColor $color
+        }
+        Write-Host "[ENTER] Select highlighted mode$eraseLine" -ForegroundColor DarkGray
+        Write-Host "[ESC] Cancel snapshot save$eraseLine" -ForegroundColor DarkGray
+    }
+
+    [Console]::CursorVisible = $false
+    try {
+        Write-Host ''
+        Write-Host 'Διάλεξε Snapshot mode' -ForegroundColor Cyan
+        Write-Host '---------------------' -ForegroundColor Cyan
+        Write-Host ''
+        $menuTop = [Console]::CursorTop
+
+        while ($true) {
+            Write-SnapshotModeFrame
+
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                'UpArrow' {
+                    if ($selectedIndex -gt 0) {
+                        $selectedIndex--
+                    }
+                }
+                'DownArrow' {
+                    if ($selectedIndex -lt ($modeItems.Count - 1)) {
+                        $selectedIndex++
+                    }
+                }
+                'Enter' {
+                    return $modeItems[$selectedIndex].Value
+                }
+                'Escape' {
+                    return $script:CancelInputToken
+                }
+                default {
+                    $typedKey = [string]$key.KeyChar
+                    if (-not [string]::IsNullOrWhiteSpace($typedKey)) {
+                        $matchedIndex = -1
+                        for ($i = 0; $i -lt $modeItems.Count; $i++) {
+                            if ($modeItems[$i].Key -eq $typedKey) {
+                                $matchedIndex = $i
+                                break
+                            }
+                        }
+
+                        if ($matchedIndex -ge 0) {
+                            $selectedIndex = $matchedIndex
+                            Write-SnapshotModeFrame
+                            Start-Sleep -Milliseconds 90
+                            return $modeItems[$selectedIndex].Value
+                        }
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
 function Initialize-SnapshotContext {
     if (-not [string]::IsNullOrWhiteSpace($Name)) {
+        $script:SnapshotMode = Resolve-SnapshotMode -Mode $SnapshotMode -DefaultMode 'Full'
         return
     }
 
@@ -307,6 +448,16 @@ function Initialize-SnapshotContext {
     }
 
     $script:Stage = $selectedStage
+
+    $selectedMode = Get-SnapshotModeSelection -CurrentMode $SnapshotMode
+    if ($selectedMode -eq $script:CancelInputToken) {
+        Write-Host 'Ακύρωση αποθήκευσης snapshot από τον χρήστη.' -ForegroundColor Yellow
+        $script:SnapshotSetupCanceled = $true
+        $global:DriverCheck_LastSnapshotSaveCanceled = $true
+        return
+    }
+
+    $script:SnapshotMode = $selectedMode
 
     if ([string]::IsNullOrWhiteSpace($CaseName) -and [string]::IsNullOrWhiteSpace($Stage)) {
         Write-Host '⚠️ IMPORTANT' -ForegroundColor Yellow
@@ -400,6 +551,10 @@ function Get-ServiceRegistrySnapshot {
 }
 
 function Get-PnpDeviceSnapshot {
+    param(
+        [string]$SnapshotMode = 'Full'
+    )
+
     function Get-ObjectPropertyValue {
         param(
             [object]$InputObject,
@@ -565,85 +720,161 @@ function Get-PnpDeviceSnapshot {
         }
     }
 
-    $deviceMap = @{}
+    function Write-PnpSnapshotProgress {
+        param(
+            [string]$PhaseName,
+            [int]$CurrentItem,
+            [int]$PhaseTotal,
+            [int]$GlobalCurrent,
+            [int]$GlobalTotal
+        )
 
-    foreach ($device in @(Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue)) {
-        $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$device.FriendlyName)) {
-            [string]$device.FriendlyName
-        }
-        else {
-            [string]$device.Name
-        }
-
-        Add-OrUpdateSnapshotPnpEntry -Map $deviceMap `
-            -InstanceId ([string]$device.InstanceId) `
-            -FriendlyName $displayName `
-            -Class ([string]$device.Class) `
-            -Present ([string]$device.Present) `
-            -Problem ([string]$device.Problem) `
-            -Status ([string]$device.Status) `
-            -ClassGuid (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_ClassGuid') `
-            -InfName (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverInfPath') `
-            -DriverName '' `
-            -Manufacturer (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Manufacturer') `
-            -DriverProviderName (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverProvider') `
-            -MatchingDeviceId (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_MatchingDeviceId') `
-            -ServiceName (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Service') `
-            -DriverInfSection (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverInfSection') `
-            -DriverKey (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Driver') `
-            -EnumeratorName (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_EnumeratorName') `
-            -Parent (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Parent') `
-            -HardwareIds (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_HardwareIds') `
-            -CompatibleIds (Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_CompatibleIds') `
-            -DriverVersion '' `
-            -DriverDate '' `
-            -Source 'Get-PnpDevice'
+        $safeGlobalTotal = [Math]::Max(1, $GlobalTotal)
+        $safePhaseTotal = [Math]::Max(1, $PhaseTotal)
+        $percentComplete = [math]::Min(100, [math]::Round(($GlobalCurrent / $safeGlobalTotal) * 100, 0))
+        $status = "{0} ({1}/{2})  |  overall {3}/{4}" -f $PhaseName, $CurrentItem, $safePhaseTotal, $GlobalCurrent, $safeGlobalTotal
+        Write-Progress -Id 1 -Activity 'Capture PnP device snapshot' -Status $status -PercentComplete $percentComplete
     }
 
-    foreach ($signedDriver in @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue)) {
-        $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.DeviceName)) {
-            [string]$signedDriver.DeviceName
-        }
-        elseif (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.FriendlyName)) {
-            [string]$signedDriver.FriendlyName
-        }
-        else {
-            [string]$signedDriver.Description
+    $deviceMap = @{}
+    $devices = @(Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue)
+    $signedDrivers = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue)
+    $deviceCount = @($devices).Count
+    $signedDriverCount = @($signedDrivers).Count
+    $totalProgressItems = $deviceCount + $signedDriverCount
+    $globalProgressIndex = 0
+
+    try {
+        for ($deviceIndex = 0; $deviceIndex -lt $deviceCount; $deviceIndex++) {
+            $device = $devices[$deviceIndex]
+            $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$device.FriendlyName)) {
+                [string]$device.FriendlyName
+            }
+            else {
+                [string]$device.Name
+            }
+
+            $classGuidValue = ''
+            $infNameValue = ''
+            $manufacturerValue = ''
+            $driverProviderValue = ''
+            $matchingDeviceIdValue = ''
+            $serviceNameValue = ''
+            $driverInfSectionValue = ''
+            $driverKeyValue = ''
+            $enumeratorNameValue = ''
+            $parentValue = ''
+            $hardwareIdsValue = ''
+            $compatibleIdsValue = ''
+
+            if ($SnapshotMode -eq 'Full') {
+                $classGuidValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_ClassGuid'
+                $infNameValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverInfPath'
+                $manufacturerValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Manufacturer'
+                $driverProviderValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverProvider'
+                $matchingDeviceIdValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_MatchingDeviceId'
+                $serviceNameValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Service'
+                $driverInfSectionValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_DriverInfSection'
+                $driverKeyValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Driver'
+                $enumeratorNameValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_EnumeratorName'
+                $parentValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_Parent'
+                $hardwareIdsValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_HardwareIds'
+                $compatibleIdsValue = Get-PnpPropertyValueSafe -InstanceId ([string]$device.InstanceId) -KeyName 'DEVPKEY_Device_CompatibleIds'
+            }
+
+            Add-OrUpdateSnapshotPnpEntry -Map $deviceMap `
+                -InstanceId ([string]$device.InstanceId) `
+                -FriendlyName $displayName `
+                -Class ([string]$device.Class) `
+                -Present ([string]$device.Present) `
+                -Problem ([string]$device.Problem) `
+                -Status ([string]$device.Status) `
+                -ClassGuid $classGuidValue `
+                -InfName $infNameValue `
+                -DriverName '' `
+                -Manufacturer $manufacturerValue `
+                -DriverProviderName $driverProviderValue `
+                -MatchingDeviceId $matchingDeviceIdValue `
+                -ServiceName $serviceNameValue `
+                -DriverInfSection $driverInfSectionValue `
+                -DriverKey $driverKeyValue `
+                -EnumeratorName $enumeratorNameValue `
+                -Parent $parentValue `
+                -HardwareIds $hardwareIdsValue `
+                -CompatibleIds $compatibleIdsValue `
+                -DriverVersion '' `
+                -DriverDate '' `
+                -Source 'Get-PnpDevice'
+
+            $globalProgressIndex++
+            if ((($deviceIndex + 1) % 5) -eq 0 -or ($deviceIndex + 1) -eq $deviceCount) {
+                $phaseName = if ($SnapshotMode -eq 'Quick') { 'Get-PnpDevice base capture' } else { 'Get-PnpDevice property enrichment' }
+                Write-PnpSnapshotProgress -PhaseName $phaseName `
+                    -CurrentItem ($deviceIndex + 1) `
+                    -PhaseTotal $deviceCount `
+                    -GlobalCurrent $globalProgressIndex `
+                    -GlobalTotal $totalProgressItems
+            }
         }
 
-        $driverDateText = ''
-        if ($null -ne $signedDriver.DriverDate) {
-            try {
-                $driverDateText = ([datetime]$signedDriver.DriverDate).ToString('yyyy-MM-dd')
+        for ($signedDriverIndex = 0; $signedDriverIndex -lt $signedDriverCount; $signedDriverIndex++) {
+            $signedDriver = $signedDrivers[$signedDriverIndex]
+            $displayName = if (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.DeviceName)) {
+                [string]$signedDriver.DeviceName
             }
-            catch {
-                $driverDateText = [string]$signedDriver.DriverDate
+            elseif (-not [string]::IsNullOrWhiteSpace([string]$signedDriver.FriendlyName)) {
+                [string]$signedDriver.FriendlyName
+            }
+            else {
+                [string]$signedDriver.Description
+            }
+
+            $driverDateText = ''
+            if ($null -ne $signedDriver.DriverDate) {
+                try {
+                    $driverDateText = ([datetime]$signedDriver.DriverDate).ToString('yyyy-MM-dd')
+                }
+                catch {
+                    $driverDateText = [string]$signedDriver.DriverDate
+                }
+            }
+
+            Add-OrUpdateSnapshotPnpEntry -Map $deviceMap `
+                -InstanceId ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DeviceID' -DefaultValue '')) `
+                -FriendlyName $displayName `
+                -Class ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DeviceClass' -DefaultValue '')) `
+                -Present '' `
+                -Problem '' `
+                -Status ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Status' -DefaultValue '')) `
+                -ClassGuid ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'ClassGuid' -DefaultValue '')) `
+                -InfName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'InfName' -DefaultValue '')) `
+                -DriverName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DriverName' -DefaultValue '')) `
+                -Manufacturer ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Manufacturer' -DefaultValue '')) `
+                -DriverProviderName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DriverProviderName' -DefaultValue '')) `
+                -MatchingDeviceId '' `
+                -ServiceName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Service' -DefaultValue '')) `
+                -DriverInfSection '' `
+                -DriverKey '' `
+                -EnumeratorName '' `
+                -Parent '' `
+                -HardwareIds '' `
+                -CompatibleIds '' `
+                -DriverVersion ([string]$signedDriver.DriverVersion) `
+                -DriverDate $driverDateText `
+                -Source 'Win32_PnPSignedDriver'
+
+            $globalProgressIndex++
+            if ((($signedDriverIndex + 1) % 10) -eq 0 -or ($signedDriverIndex + 1) -eq $signedDriverCount) {
+                Write-PnpSnapshotProgress -PhaseName 'Merge Win32_PnPSignedDriver details' `
+                    -CurrentItem ($signedDriverIndex + 1) `
+                    -PhaseTotal $signedDriverCount `
+                    -GlobalCurrent $globalProgressIndex `
+                    -GlobalTotal $totalProgressItems
             }
         }
-
-        Add-OrUpdateSnapshotPnpEntry -Map $deviceMap `
-            -InstanceId ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DeviceID' -DefaultValue '')) `
-            -FriendlyName $displayName `
-            -Class ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DeviceClass' -DefaultValue '')) `
-            -Present '' `
-            -Problem '' `
-            -Status ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Status' -DefaultValue '')) `
-            -ClassGuid ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'ClassGuid' -DefaultValue '')) `
-            -InfName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'InfName' -DefaultValue '')) `
-            -DriverName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DriverName' -DefaultValue '')) `
-            -Manufacturer ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Manufacturer' -DefaultValue '')) `
-            -DriverProviderName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'DriverProviderName' -DefaultValue '')) `
-            -MatchingDeviceId '' `
-            -ServiceName ([string](Get-ObjectPropertyValue -InputObject $signedDriver -PropertyName 'Service' -DefaultValue '')) `
-            -DriverInfSection '' `
-            -DriverKey '' `
-            -EnumeratorName '' `
-            -Parent '' `
-            -HardwareIds '' `
-            -CompatibleIds '' `
-            -DriverVersion ([string]$signedDriver.DriverVersion) `
-            -DriverDate $driverDateText `
-            -Source 'Win32_PnPSignedDriver'
+    }
+    finally {
+        Write-Progress -Id 1 -Activity 'Capture PnP device snapshot' -Completed
     }
 
     return @($deviceMap.Values | Sort-Object InstanceId, FriendlyName)
@@ -1084,6 +1315,56 @@ function New-UniqueSnapshotPath {
     }
 }
 
+function Format-ElapsedSeconds {
+    param(
+        [timespan]$Elapsed
+    )
+
+    return ('{0:N2}s' -f $Elapsed.TotalSeconds)
+}
+
+function Write-SnapshotSectionStatus {
+    param(
+        [string]$SectionName,
+        [ValidateSet('Start', 'Done')]
+        [string]$State,
+        [timespan]$Elapsed = [timespan]::Zero
+    )
+
+    switch ($State) {
+        'Start' {
+            Write-Host ("[Snapshot] {0}..." -f $SectionName) -ForegroundColor DarkCyan
+        }
+        'Done' {
+            Write-Host ("[Snapshot] {0} done in {1}" -f $SectionName, (Format-ElapsedSeconds -Elapsed $Elapsed)) -ForegroundColor DarkGray
+        }
+    }
+}
+
+function Invoke-TimedSnapshotSection {
+    param(
+        [string]$SectionName,
+        [System.Collections.Generic.List[object]]$TimingSink,
+        [scriptblock]$ScriptBlock
+    )
+
+    Write-SnapshotSectionStatus -SectionName $SectionName -State Start
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        return (& $ScriptBlock)
+    }
+    finally {
+        $stopwatch.Stop()
+        $elapsed = $stopwatch.Elapsed
+        $TimingSink.Add([pscustomobject]@{
+                Name = $SectionName
+                DurationMs = [math]::Round($elapsed.TotalMilliseconds)
+                DurationSeconds = [math]::Round($elapsed.TotalSeconds, 3)
+            })
+        Write-SnapshotSectionStatus -SectionName $SectionName -State Done -Elapsed $elapsed
+    }
+}
+
 function Get-StageRecommendation {
     param(
         [string]$CurrentStage
@@ -1128,58 +1409,107 @@ $safeName = Convert-ToSafeSnapshotName -Value $snapshotFolderLabel
 $snapshotPath = New-UniqueSnapshotPath -RootPath $OutputRoot -BaseName $safeName
 New-Item -ItemType Directory -Path $snapshotPath -Force | Out-Null
 
+$totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$sectionTimings = [System.Collections.Generic.List[object]]::new()
+
 $metadata = [pscustomobject]@{
     ComputerName = $env:COMPUTERNAME
     SnapshotName = $snapshotLabel
     CaseName = $CaseName
     Stage = $Stage
+    SnapshotMode = $SnapshotMode
     SnapshotPath = $snapshotPath
     Timestamp = $timestamp
     IsAdministrator = $true
     FocusTerm = @($FocusTerm)
 }
 
-$bcdResult = Invoke-NativeCapture -FilePath 'bcdedit.exe' -Arguments @('/enum', 'all')
-$pnpResult = Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/enum-drivers')
-$driverPackages = @(Convert-PnpUtilToDriverPackages -Lines $pnpResult.Output)
-$serviceRegistry = @(Get-ServiceRegistrySnapshot)
-$pnpDevices = @(Get-PnpDeviceSnapshot)
-$rootCerts = @(Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\Root')
-$trustedPublisherCerts = @(Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\TrustedPublisher')
-$registryFocus = Get-FocusedRegistrySnapshot -Terms $FocusTerm
-$focusFiles = @(Get-FocusFileSnapshot -Terms $FocusTerm)
-$uninstallEntries = @(Get-UninstallEntrySnapshot)
-$setupApi = Get-SetupApiSnapshot
+$bcdResult = Invoke-TimedSnapshotSection -SectionName 'Capture BCD state' -TimingSink $sectionTimings -ScriptBlock {
+    Invoke-NativeCapture -FilePath 'bcdedit.exe' -Arguments @('/enum', 'all')
+}
+$pnpResult = Invoke-TimedSnapshotSection -SectionName 'Enumerate driver packages' -TimingSink $sectionTimings -ScriptBlock {
+    Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/enum-drivers')
+}
+$driverPackages = Invoke-TimedSnapshotSection -SectionName 'Parse driver packages' -TimingSink $sectionTimings -ScriptBlock {
+    @(Convert-PnpUtilToDriverPackages -Lines $pnpResult.Output)
+}
+$serviceRegistry = Invoke-TimedSnapshotSection -SectionName 'Capture service registry snapshot' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-ServiceRegistrySnapshot)
+}
+$pnpDevices = Invoke-TimedSnapshotSection -SectionName 'Capture PnP device snapshot' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-PnpDeviceSnapshot -SnapshotMode $SnapshotMode)
+}
+$rootCerts = Invoke-TimedSnapshotSection -SectionName 'Capture ROOT certificates' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\Root')
+}
+$trustedPublisherCerts = Invoke-TimedSnapshotSection -SectionName 'Capture TrustedPublisher certificates' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-CertificateSnapshot -StorePath 'Cert:\LocalMachine\TrustedPublisher')
+}
+$registryFocus = Invoke-TimedSnapshotSection -SectionName 'Capture focused registry snapshot' -TimingSink $sectionTimings -ScriptBlock {
+    Get-FocusedRegistrySnapshot -Terms $FocusTerm
+}
+$focusFiles = Invoke-TimedSnapshotSection -SectionName 'Capture focused file snapshot' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-FocusFileSnapshot -Terms $FocusTerm)
+}
+$uninstallEntries = Invoke-TimedSnapshotSection -SectionName 'Capture uninstall entries' -TimingSink $sectionTimings -ScriptBlock {
+    @(Get-UninstallEntrySnapshot)
+}
+$setupApi = Invoke-TimedSnapshotSection -SectionName 'Capture SetupAPI snapshot' -TimingSink $sectionTimings -ScriptBlock {
+    Get-SetupApiSnapshot
+}
 
-$metadata | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'metadata.json') -Encoding utf8
-$bcdResult.Output | Set-Content -Path (Join-Path $snapshotPath 'bcdedit.enum.all.txt') -Encoding utf8
-$pnpResult.Output | Set-Content -Path (Join-Path $snapshotPath 'pnputil.enum-drivers.txt') -Encoding utf8
-$driverPackages | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'driver-packages.json') -Encoding utf8
-$serviceRegistry | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'services.registry.json') -Encoding utf8
-$pnpDevices | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'pnp-devices.json') -Encoding utf8
-$rootCerts | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'cert-root.json') -Encoding utf8
-$trustedPublisherCerts | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'cert-trustedpublisher.json') -Encoding utf8
-$registryFocus | ConvertTo-Json -Depth 7 | Set-Content -Path (Join-Path $snapshotPath 'registry-focus.json') -Encoding utf8
-$focusFiles | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'focus-files.json') -Encoding utf8
-$uninstallEntries | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $snapshotPath 'uninstall-entries.json') -Encoding utf8
-$setupApi | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'setupapi.dev-log.json') -Encoding utf8
-$setupApi.Tail | Set-Content -Path (Join-Path $snapshotPath 'setupapi.dev-log.tail.txt') -Encoding utf8
+$metadata | Add-Member -NotePropertyName CollectionTimings -NotePropertyValue @($sectionTimings.ToArray())
+
+Invoke-TimedSnapshotSection -SectionName 'Write snapshot files' -TimingSink $sectionTimings -ScriptBlock {
+    $metadata | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $snapshotPath 'metadata.json') -Encoding utf8
+    $bcdResult.Output | Set-Content -Path (Join-Path $snapshotPath 'bcdedit.enum.all.txt') -Encoding utf8
+    $pnpResult.Output | Set-Content -Path (Join-Path $snapshotPath 'pnputil.enum-drivers.txt') -Encoding utf8
+    $driverPackages | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'driver-packages.json') -Encoding utf8
+    $serviceRegistry | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'services.registry.json') -Encoding utf8
+    $pnpDevices | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'pnp-devices.json') -Encoding utf8
+    $rootCerts | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'cert-root.json') -Encoding utf8
+    $trustedPublisherCerts | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'cert-trustedpublisher.json') -Encoding utf8
+    $registryFocus | ConvertTo-Json -Depth 7 | Set-Content -Path (Join-Path $snapshotPath 'registry-focus.json') -Encoding utf8
+    $focusFiles | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'focus-files.json') -Encoding utf8
+    $uninstallEntries | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $snapshotPath 'uninstall-entries.json') -Encoding utf8
+    $setupApi | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'setupapi.dev-log.json') -Encoding utf8
+    $setupApi.Tail | Set-Content -Path (Join-Path $snapshotPath 'setupapi.dev-log.tail.txt') -Encoding utf8
+}
+
+$totalStopwatch.Stop()
+$timingSummary = @($sectionTimings.ToArray() | Sort-Object DurationMs -Descending)
+$timingReport = [pscustomobject]@{
+    TotalDurationMs = [math]::Round($totalStopwatch.Elapsed.TotalMilliseconds)
+    TotalDurationSeconds = [math]::Round($totalStopwatch.Elapsed.TotalSeconds, 3)
+    Sections = $timingSummary
+}
+$timingReport | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $snapshotPath 'snapshot-timings.json') -Encoding utf8
 
 Write-Host ''
 Write-Host 'Driver Snapshot Saved' -ForegroundColor Green
 Write-Host '---------------------' -ForegroundColor Green
 Write-Host "Path           : $snapshotPath"
 Write-Host "Label          : $snapshotLabel"
+Write-Host "Snapshot mode  : $SnapshotMode"
 Write-Host "Focus terms    : $($FocusTerm -join ', ')"
-Write-Host "Driver packages: $($driverPackages.Count)"
-Write-Host "PnP devices    : $($pnpDevices.Count)"
-Write-Host "Service keys   : $($serviceRegistry.Count)"
+Write-Host "Driver packages: $(@($driverPackages).Count)"
+Write-Host "PnP devices    : $(@($pnpDevices).Count)"
+Write-Host "Service keys   : $(@($serviceRegistry).Count)"
 Write-Host "Registry keys  : $(@($registryFocus.Keys).Count)"
 Write-Host "Registry values: $(@($registryFocus.Values).Count)"
-Write-Host "Focus files    : $($focusFiles.Count)"
-Write-Host "Uninstall apps : $($uninstallEntries.Count)"
+Write-Host "Focus files    : $(@($focusFiles).Count)"
+Write-Host "Uninstall apps : $(@($uninstallEntries).Count)"
+Write-Host "Total save time: $(Format-ElapsedSeconds -Elapsed $totalStopwatch.Elapsed)"
 if (-not [string]::IsNullOrWhiteSpace($Stage)) {
     Write-Host "Stage          : $Stage"
 }
+Write-Host ''
+Write-Host 'Slowest sections' -ForegroundColor Cyan
+Write-Host '----------------' -ForegroundColor Cyan
+foreach ($timedSection in @($timingSummary | Select-Object -First 5)) {
+    Write-Host ("{0,-32} {1,8:N2}s" -f $timedSection.Name, $timedSection.DurationSeconds)
+}
+Write-Host ''
+Write-Host "Timing report  : $(Join-Path $snapshotPath 'snapshot-timings.json')" -ForegroundColor DarkGray
 Write-Host ''
 Write-Host (Get-StageRecommendation -CurrentStage $Stage) -ForegroundColor DarkYellow

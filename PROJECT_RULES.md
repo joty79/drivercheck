@@ -622,3 +622,35 @@ It strictly adheres to the user-defined formatting and documentation protocols.
     4. When root/internal layout changes, update launcher references and README examples in the same pass.
 *   **Files affected:** `DriverCheck.ps1`, `internal\Invoke-DriverLiveCheck.ps1`, `internal\Save-DriverSnapshot.ps1`, `internal\Compare-DriverSnapshots.ps1`, `internal\Invoke-DriverCleanupFromSnapshots.ps1`, `internal\DriverCheckWorkbench.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
 *   **Validation/tests run:** Root `.ps1` inventory check; parser validation after path updates; elevated runtime validation of moved live tool via `internal\Invoke-DriverLiveCheck.ps1`
+
+*   **Date:** 2026-03-29
+*   **Problem:** `Save-DriverSnapshot.ps1` felt "extremely slow" on a real Windows installation, but the repo had no hard timing data to show where the time was actually going.
+*   **Root Cause:** The save flow collected many evidence types in sequence without per-section timing visibility, so the operator could only feel that the snapshot was slow, not identify the actual hotspot.
+*   **Guardrail:**
+    1. Keep per-section timings in the snapshot save flow and persist them to `snapshot-timings.json`.
+    2. Show live section progress while a snapshot is being captured so the operator can see whether the script is still working.
+    3. Treat `PnP` enrichment as the primary optimization target before spending time on lighter sections such as certs, `BCD`, or file-write serialization.
+    4. Future `Quick Snapshot` work should start by reducing `PnP` snapshot cost, because real host timing showed it dominates the save runtime.
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `TODO.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated real-host timing run via `gsudo`; generated `snapshot-timings.json` showed ~`49s` in `Capture PnP device snapshot` and ~`2.4s` in focused registry capture
+
+*   **Date:** 2026-03-29
+*   **Problem:** Even after adding timing visibility, the slowest part of snapshot save still felt opaque while it was running because the operator could not tell whether the `PnP` section was actually advancing.
+*   **Root Cause:** The save flow reported section start/end times, but the heaviest `PnP` section had no in-flight progress and therefore still looked frozen on real systems.
+*   **Guardrail:**
+    1. For the heaviest save section, prefer real item-count progress over generic spinner-style output.
+    2. `PnP` snapshot progress should expose both expensive phases: `Get-PnpDevice` property enrichment and `Win32_PnPSignedDriver` merge.
+    3. Keep the progress implementation lightweight enough that it does not become the new bottleneck; update in batches instead of per-item repaint spam.
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated real-host snapshot save via `gsudo` after adding `PnP` progress completed successfully
+
+*   **Date:** 2026-03-29
+*   **Problem:** After profiling confirmed that `PnP` enrichment dominated snapshot save time, the repo still had no actual fast path for day-to-day use on a real Windows installation.
+*   **Root Cause:** The save flow always paid for the deepest `Get-PnpDeviceProperty` enrichment even when the operator only needed a quick before/after snapshot with basic `PnP` identity plus signed-driver/package correlation.
+*   **Guardrail:**
+    1. `Save-DriverSnapshot.ps1` should support two explicit modes: `Quick` and `Full`.
+    2. `Quick` mode may skip expensive per-device `Get-PnpDeviceProperty` enrichment, but it must keep the same output shape and still preserve basic `PnP` identity plus `Win32_PnPSignedDriver` correlation.
+    3. `Full` mode remains the source of truth for deepest `PnP` forensic detail.
+    4. Interactive save flow should let the operator choose mode explicitly instead of silently changing behavior.
+*   **Files affected:** `internal\Save-DriverSnapshot.ps1`, `README.md`, `TODO.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation; elevated `Full` timing run (~`52s` total, ~`49s` `PnP`); elevated `Quick` timing run (~`6.36s` total, ~`0.83s` `PnP`); metadata and `pnp-devices.json` structure review for `Quick` output

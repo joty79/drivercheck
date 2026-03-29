@@ -116,6 +116,11 @@
 - Τα cleanup menus του `driver_check.ps1` έγιναν πιο readable: τα main scope options έχουν πλέον διαφορετικά colors ανά γραμμή, και όταν υπάρχει μόνο ένα `Remaining linked target` το continuation menu κρύβει το άχρηστο `select` option και δείχνει μόνο `clean now` ή `finish`.
 - Το repo αγνοεί πλέον τα generated `snapshots/` και `_snapshotstest/` folders μέσω `.gitignore`, ώστε τα investigation artifacts να μη μπαίνουν κατά λάθος σε commits/pushes.
 
+- Το `Save-DriverSnapshot.ps1` γράφει πλέον live per-section timing feedback κατά το snapshot capture, αποθηκεύει `snapshot-timings.json` μέσα σε κάθε snapshot και δείχνει στο τέλος τα slowest sections για real-host profiling.
+- Επιβεβαιώθηκε σε elevated host run ότι το μεγάλο bottleneck του save flow δεν είναι το `focused registry` ή το file hashing path, αλλά το `PnP device snapshot`, που μόνο του κατανάλωσε περίπου `49s` σε real Windows installation.
+- Το `Save-DriverSnapshot.ps1` δείχνει πλέον και real `PnP` scan progress μέσα στο βαρύτερο section του save flow, με counts για `Get-PnpDevice` property enrichment και `Win32_PnPSignedDriver` merge αντί για γενικό "working" feeling.
+- Το `Save-DriverSnapshot.ps1` υποστηρίζει πλέον `Snapshot mode`: `Quick` για faster καθημερινό save και `Full` για deepest `PnP` enrichment. Σε elevated host test το `Quick` mode έριξε το total save time από περίπου `52s` σε περίπου `6s`.
+
 ## 2026-03-18
 
 ### Added
