@@ -2,6 +2,18 @@
 
 Όλες οι notable αλλαγές του project καταγράφονται εδώ.
 
+## 2026-03-30
+
+### Changed
+
+- Το `Invoke-DriverLiveCheck.ps1` αποθηκεύει πλέον το confirmed cleanup output σε persisted `.md` transcript κάτω από νέο `live\` folder στο repo root, με filename που περιλαμβάνει το primary driver token και timestamp, ώστε κάθε `YES` destructive run να αφήνει άμεσα shareable artifact.
+- Το `DriverCheck.ps1` απέκτησε νέο launcher submenu `Live Driver Clean Reports` κάτω από το `Live Driver Check`, με ίδιο header/visual style, picker για τα `live\*.md` cleanup transcripts, terminal-style re-read viewer και guarded delete path για τα saved reports.
+
+### Documented
+
+- Το `README.md` ενημερώθηκε ώστε το live cleanup flow να αναφέρει ρητά το νέο persisted markdown transcript κάτω από `live\`.
+- Το `README.md` ενημερώθηκε ώστε το launcher section να περιγράφει και το νέο `Live Driver Clean Reports` viewer/delete flow.
+
 ## 2026-03-28
 
 ### Added

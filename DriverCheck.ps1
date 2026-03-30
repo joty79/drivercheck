@@ -7,6 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:InternalToolsRoot = Join-Path $PSScriptRoot 'internal'
+$script:LiveReportsRoot = Join-Path $PSScriptRoot 'live'
 
 function Test-CurrentSessionElevated {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -186,7 +187,8 @@ function Get-LauncherMenuItems {
         [pscustomobject]@{ Key = '4'; Label = 'Audit Cleanup From Snapshots'; Color = 'DarkYellow' },
         [pscustomobject]@{ Key = '5'; Label = 'Run Cleanup From Snapshots'; Color = 'Red' },
         [pscustomobject]@{ Key = '6'; Label = 'Live Driver Check'; Color = 'Green' },
-        [pscustomobject]@{ Key = '7'; Label = 'Delete Snapshot'; Color = 'Magenta' },
+        [pscustomobject]@{ Key = '7'; Label = 'Live Driver Clean Reports'; Color = 'Green' },
+        [pscustomobject]@{ Key = '8'; Label = 'Delete Snapshot'; Color = 'Magenta' },
         [pscustomobject]@{ Key = '0'; Label = 'Exit'; Color = 'Gray' }
     )
 }
@@ -644,6 +646,461 @@ function Get-StructuredCompareReportContext {
         ModeText             = $modeText
         CompareIdentity      = ('{0}||{1}||{2}' -f $beforePath, $afterPath, $modeText)
         SemanticIdentity     = ('{0}||{1}||{2}' -f $displayLabel, $modeText, 'differences-only.txt')
+    }
+}
+
+function Get-LiveCleanupReportFiles {
+    param(
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RootPath) -or -not (Test-Path -LiteralPath $RootPath)) {
+        return @()
+    }
+
+    return @(
+        Get-ChildItem -LiteralPath $RootPath -File -Filter '*.md' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Name = $_.Name
+                    FullName = $_.FullName
+                    BaseName = $_.BaseName
+                    Length = $_.Length
+                    LastWriteTime = $_.LastWriteTime
+                }
+            }
+    )
+}
+
+function Get-LiveCleanupReportDisplayLabel {
+    param(
+        [object]$Report
+    )
+
+    if ($null -eq $Report) {
+        return ''
+    }
+
+    return [string]$Report.BaseName
+}
+
+function Get-LiveCleanupReportMetaLine {
+    param(
+        [object]$Report
+    )
+
+    if ($null -eq $Report) {
+        return ''
+    }
+
+    return ('{0:yyyy-MM-dd HH:mm}  |  {1}' -f [datetime]$Report.LastWriteTime, (Format-FileSize -Bytes ([long]$Report.Length)))
+}
+
+function Show-LiveCleanupReportSelectionPreview {
+    param(
+        [object]$SelectedReport
+    )
+
+    if ($null -eq $SelectedReport) {
+        return
+    }
+
+    Write-Host ''
+    Write-Host 'Current Live Cleanup Report' -ForegroundColor Green
+    Write-Host '---------------------------' -ForegroundColor Green
+    Write-Host ("Report : {0}" -f (Get-LiveCleanupReportDisplayLabel -Report $SelectedReport)) -ForegroundColor Green
+    Write-Host ("Meta   : {0}" -f (Get-LiveCleanupReportMetaLine -Report $SelectedReport)) -ForegroundColor DarkGray
+}
+
+function Confirm-LiveCleanupReportDeletion {
+    param(
+        [object]$Report
+    )
+
+    if ($null -eq $Report) {
+        return $false
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $script:LiveReportsRoot -ErrorAction Stop).ProviderPath.TrimEnd('\')
+    $resolvedTarget = (Resolve-Path -LiteralPath $Report.FullName -ErrorAction Stop).ProviderPath.TrimEnd('\')
+    $rootPrefix = $resolvedRoot + '\'
+
+    if (
+        $resolvedTarget -eq $resolvedRoot -or
+        (-not $resolvedTarget.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase))
+    ) {
+        Write-Host 'Ακύρωση: το target live report path βγήκε εκτός του configured live root.' -ForegroundColor Red
+        Start-Sleep -Milliseconds 1200
+        return $false
+    }
+
+    Clear-HostSafe
+    Show-LauncherHeader -Snapshots @(Get-SnapshotFolders -RootPath $SnapshotsRoot)
+    Write-Host ''
+    Write-Host 'Delete Live Cleanup Report' -ForegroundColor Magenta
+    Write-Host '--------------------------' -ForegroundColor Magenta
+    Write-Host ("Report : {0}" -f (Get-LiveCleanupReportDisplayLabel -Report $Report)) -ForegroundColor Yellow
+    Write-Host ("Meta   : {0}" -f (Get-LiveCleanupReportMetaLine -Report $Report)) -ForegroundColor DarkGray
+    Write-Host ("Path   : {0}" -f $resolvedTarget) -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '⚠️ IMPORTANT' -ForegroundColor Red
+    Write-Host 'Αυτό θα διαγράψει το selected live cleanup report από το live root.' -ForegroundColor Yellow
+    Write-Host '[ENTER] Delete live report' -ForegroundColor DarkYellow
+    Write-Host '[ESC] Cancel' -ForegroundColor DarkGray
+
+    if ([Console]::IsInputRedirected) {
+        $confirmation = Read-HostTrimmed -Prompt 'Πάτα ENTER για διαγραφή ή γράψε ESC για ακύρωση'
+        if (Test-IsEscapeInput -Value $confirmation) {
+            return $false
+        }
+
+        return [string]::IsNullOrWhiteSpace($confirmation)
+    }
+
+    [Console]::CursorVisible = $false
+    try {
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                'Enter' { return $true }
+                'Escape' { return $false }
+            }
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
+function Select-LiveCleanupReportItem {
+    param(
+        [object[]]$Items
+    )
+
+    if ($Items.Count -eq 0) {
+        return $null
+    }
+
+    $workingItems = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in @($Items)) {
+        [void]$workingItems.Add($item)
+    }
+
+    $selectedReport = $null
+    while ($true) {
+        if ($workingItems.Count -eq 0) {
+            return $null
+        }
+
+        Clear-HostSafe
+        Show-LauncherHeader -Snapshots @(Get-SnapshotFolders -RootPath $SnapshotsRoot)
+        Show-LiveCleanupReportSelectionPreview -SelectedReport $selectedReport
+        Write-Host ''
+        Write-Host 'Live Driver Clean Reports' -ForegroundColor Green
+        Write-Host '-------------------------' -ForegroundColor Green
+
+        if ([Console]::IsInputRedirected) {
+            for ($i = 0; $i -lt $workingItems.Count; $i++) {
+                $item = $workingItems[$i]
+                Write-Host (Get-ConsoleSafeText -Text ("[{0:00}] {1}" -f ($i + 1), (Get-LiveCleanupReportDisplayLabel -Report $item))) -ForegroundColor Green
+                Write-Host (Get-ConsoleSafeText -Text ("      {0}" -f (Get-LiveCleanupReportMetaLine -Report $item))) -ForegroundColor DarkGray
+            }
+
+            Write-Host ''
+            Write-Host '[ESC] Cancel selection' -ForegroundColor DarkGray
+            $selection = Read-HostTrimmed -Prompt 'Διάλεξε αριθμό live report'
+            if (Test-IsEscapeInput -Value $selection) {
+                return $null
+            }
+
+            $index = $selection -as [int]
+            if ($null -eq $index -or $index -lt 1 -or $index -gt $workingItems.Count) {
+                Write-Host 'Μη έγκυρη επιλογή live report.' -ForegroundColor Yellow
+                Start-Sleep -Milliseconds 900
+                continue
+            }
+
+            return $workingItems[$index - 1]
+        }
+
+        $selectedIndex = 0
+        $eraseLine = '{0}[K' -f [char]27
+        $restartPicker = $false
+
+        function Write-LiveReportPickerFrame {
+            [Console]::SetCursorPosition(0, $menuTop)
+            for ($i = 0; $i -lt $workingItems.Count; $i++) {
+                $item = $workingItems[$i]
+                $isSelected = $i -eq $selectedIndex
+                $prefix = if ($isSelected) { '❯' } else { ' ' }
+                $line = Get-ConsoleSafeText -Text ("{0}[{1:00}] {2}" -f $prefix, ($i + 1), (Get-LiveCleanupReportDisplayLabel -Report $item))
+                $color = if ($isSelected) { 'White' } else { 'Green' }
+                Write-Host "$line$eraseLine" -ForegroundColor $color
+                Write-Host ((Get-ConsoleSafeText -Text ("      {0}" -f (Get-LiveCleanupReportMetaLine -Report $item))) + $eraseLine) -ForegroundColor DarkGray
+            }
+
+            Write-Host ((Get-ConsoleSafeText -Text '[UP/DOWN] Move  [ENTER] View  [1-9] Shortcut  [D/DEL] Delete  [ESC] Back') + $eraseLine) -ForegroundColor DarkGray
+        }
+
+        [Console]::CursorVisible = $false
+        try {
+            Write-Host ''
+            $menuTop = [Console]::CursorTop
+            $frameHeight = ($workingItems.Count * 2) + 1
+            for ($lineIndex = 0; $lineIndex -lt $frameHeight; $lineIndex++) {
+                Write-Host ''
+            }
+            [Console]::SetCursorPosition(0, $menuTop)
+
+            while ($true) {
+                Write-LiveReportPickerFrame
+                $key = [Console]::ReadKey($true)
+                switch ($key.Key) {
+                    'UpArrow' {
+                        if ($selectedIndex -gt 0) {
+                            $selectedIndex--
+                        }
+                    }
+                    'DownArrow' {
+                        if ($selectedIndex -lt ($workingItems.Count - 1)) {
+                            $selectedIndex++
+                        }
+                    }
+                    'Enter' {
+                        return $workingItems[$selectedIndex]
+                    }
+                    'Escape' {
+                        return $null
+                    }
+                    'Delete' {
+                        $targetItem = $workingItems[$selectedIndex]
+                        if (Confirm-LiveCleanupReportDeletion -Report $targetItem) {
+                            Remove-Item -LiteralPath $targetItem.FullName -Force -ErrorAction Stop
+                            [void]$workingItems.RemoveAt($selectedIndex)
+                            if ($selectedIndex -ge $workingItems.Count -and $selectedIndex -gt 0) {
+                                $selectedIndex--
+                            }
+                            $selectedReport = if ($workingItems.Count -gt 0) { $workingItems[$selectedIndex] } else { $null }
+                            if ($workingItems.Count -eq 0) {
+                                return $null
+                            }
+                            $restartPicker = $true
+                        }
+                        break
+                    }
+                    default {
+                        $typedKey = [string]$key.KeyChar
+                        if ($typedKey -match '^[dD]$') {
+                            $targetItem = $workingItems[$selectedIndex]
+                            if (Confirm-LiveCleanupReportDeletion -Report $targetItem) {
+                                Remove-Item -LiteralPath $targetItem.FullName -Force -ErrorAction Stop
+                                [void]$workingItems.RemoveAt($selectedIndex)
+                                if ($selectedIndex -ge $workingItems.Count -and $selectedIndex -gt 0) {
+                                    $selectedIndex--
+                                }
+                                $selectedReport = if ($workingItems.Count -gt 0) { $workingItems[$selectedIndex] } else { $null }
+                                if ($workingItems.Count -eq 0) {
+                                    return $null
+                                }
+                                $restartPicker = $true
+                            }
+                            break
+                        }
+
+                        if ($typedKey -match '^[1-9]$') {
+                            $typedIndex = ([int]$typedKey) - 1
+                            if ($typedIndex -lt $workingItems.Count) {
+                                $selectedIndex = $typedIndex
+                                $selectedReport = $workingItems[$selectedIndex]
+                                Write-LiveReportPickerFrame
+                                Start-Sleep -Milliseconds 90
+                                return $workingItems[$selectedIndex]
+                            }
+                        }
+                    }
+                }
+
+                if ($restartPicker) {
+                    $restartPicker = $false
+                    break
+                }
+
+                $selectedReport = $workingItems[$selectedIndex]
+            }
+        }
+        finally {
+            [Console]::CursorVisible = $true
+        }
+    }
+}
+
+function Get-LiveCleanupReportDisplayLines {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    $allLines = [string[]](Get-Content -LiteralPath $Path -ErrorAction Stop)
+    $filteredLines = foreach ($line in $allLines) {
+        if (
+            $line -match '^\*{6,}$' -or
+            $line -match '^PowerShell transcript (start|end)$' -or
+            $line -match '^Start time:\s*' -or
+            $line -match '^End time:\s*'
+        ) {
+            continue
+        }
+
+        [string]$line
+    }
+
+    $startIndex = 0
+    while ($startIndex -lt $filteredLines.Count -and [string]::IsNullOrWhiteSpace([string]$filteredLines[$startIndex])) {
+        $startIndex++
+    }
+
+    $endIndex = $filteredLines.Count - 1
+    while ($endIndex -ge $startIndex -and [string]::IsNullOrWhiteSpace([string]$filteredLines[$endIndex])) {
+        $endIndex--
+    }
+
+    if ($endIndex -lt $startIndex) {
+        return @()
+    }
+
+    return @($filteredLines[$startIndex..$endIndex])
+}
+
+function Show-LiveCleanupReportFile {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        Write-Host ("Το live cleanup report δεν βρέθηκε: {0}" -f $Path) -ForegroundColor Yellow
+        return
+    }
+
+    $lines = @(Get-LiveCleanupReportDisplayLines -Path $Path)
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        $line = [string]$lines[$index]
+        $nextLine = if (($index + 1) -lt $lines.Count) { [string]$lines[$index + 1] } else { '' }
+
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            Write-Host ''
+            continue
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($line) -and -not ($line -match '^\s') -and (Test-IsSectionUnderline -Line $nextLine)) {
+            Write-Host $line -ForegroundColor Cyan
+            continue
+        }
+
+        if (Test-IsSectionUnderline -Line $line) {
+            Write-Host $line -ForegroundColor Cyan
+            continue
+        }
+
+        switch -Regex ($line) {
+            '^PS>TerminatingError' {
+                Write-Host $line -ForegroundColor DarkYellow
+                continue
+            }
+            '^(✅|\[V\])' {
+                Write-Host $line -ForegroundColor Green
+                continue
+            }
+            '^(⚠️|\[!\])' {
+                Write-Host $line -ForegroundColor Yellow
+                continue
+            }
+            '^(🔵|🧩|📦|📁|\[~\]|\[DEV\]|\[PKG\]|\[P\])' {
+                Write-Host $line -ForegroundColor Cyan
+                continue
+            }
+            '^(🔸| ->)' {
+                Write-Host $line -ForegroundColor DarkYellow
+                continue
+            }
+            default {
+                Write-Host $line
+            }
+        }
+    }
+}
+
+function Read-LiveCleanupReportViewerAction {
+    if ([Console]::IsInputRedirected) {
+        $choice = Read-HostTrimmed -Prompt 'Πατήστε ENTER για επιστροφή ή γράψε D για διαγραφή'
+        if ([string]$choice -match '^(?i:d|del|delete)$') {
+            return 'Delete'
+        }
+
+        return 'Back'
+    }
+
+    Write-Host ''
+    Write-Host '[ENTER] Back to live reports' -ForegroundColor DarkGray
+    Write-Host '[D/DEL] Delete this live report' -ForegroundColor DarkYellow
+    Write-Host '[ESC] Back to live reports' -ForegroundColor DarkGray
+
+    [Console]::CursorVisible = $false
+    try {
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                'Enter' { return 'Back' }
+                'Escape' { return 'Back' }
+                'Delete' { return 'Delete' }
+                default {
+                    if ([string]$key.KeyChar -match '^[dD]$') {
+                        return 'Delete'
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
+function Invoke-LiveCleanupReportViewer {
+    param(
+        [object]$Report
+    )
+
+    if ($null -eq $Report) {
+        return 'Back'
+    }
+
+    while ($true) {
+        Clear-HostSafe
+        Show-LauncherHeader -Snapshots @(Get-SnapshotFolders -RootPath $SnapshotsRoot)
+        Write-Host ''
+        Write-Host 'Live Driver Clean Reports' -ForegroundColor Green
+        Write-Host '-------------------------' -ForegroundColor Green
+        Write-Host ("Report : {0}" -f (Get-LiveCleanupReportDisplayLabel -Report $Report)) -ForegroundColor Green
+        Write-Host ("Meta   : {0}" -f (Get-LiveCleanupReportMetaLine -Report $Report)) -ForegroundColor DarkGray
+        Write-Host ("Path   : {0}" -f $Report.FullName) -ForegroundColor DarkGray
+        Write-Host ''
+
+        Show-LiveCleanupReportFile -Path $Report.FullName
+        $action = Read-LiveCleanupReportViewerAction
+        if ($action -eq 'Delete') {
+            if (Confirm-LiveCleanupReportDeletion -Report $Report) {
+                Remove-Item -LiteralPath $Report.FullName -Force -ErrorAction Stop
+                return 'Deleted'
+            }
+
+            continue
+        }
+
+        return 'Back'
     }
 }
 
@@ -1663,6 +2120,43 @@ function Invoke-LiveDriverCheck {
     & (Get-InternalToolPath -ScriptName 'Invoke-DriverLiveCheck.ps1') -EmbeddedInLauncher
 }
 
+function Invoke-LiveCleanupReports {
+    while ($true) {
+        $reports = @(Get-LiveCleanupReportFiles -RootPath $script:LiveReportsRoot)
+        if ($reports.Count -eq 0) {
+            Clear-HostSafe
+            Show-LauncherHeader -Snapshots @(Get-SnapshotFolders -RootPath $SnapshotsRoot)
+            Write-Host ''
+            Write-Host 'Live Driver Clean Reports' -ForegroundColor Green
+            Write-Host '-------------------------' -ForegroundColor Green
+            Write-Host ("Δεν βρέθηκαν live cleanup reports κάτω από: {0}" -f $script:LiveReportsRoot) -ForegroundColor Yellow
+            Pause-Launcher
+            return
+        }
+
+        $selectedReport = Select-LiveCleanupReportItem -Items $reports
+        if ($null -eq $selectedReport) {
+            return
+        }
+
+        $reports = @(Get-LiveCleanupReportFiles -RootPath $script:LiveReportsRoot)
+        $selectedReport = $reports | Where-Object { $_.FullName -eq $selectedReport.FullName } | Select-Object -First 1
+        if ($null -eq $selectedReport) {
+            Clear-HostSafe
+            Show-LauncherHeader -Snapshots @(Get-SnapshotFolders -RootPath $SnapshotsRoot)
+            Write-Host ''
+            Write-Host 'Το selected live cleanup report δεν υπάρχει πια.' -ForegroundColor Yellow
+            Pause-Launcher
+            return
+        }
+
+        $viewerAction = Invoke-LiveCleanupReportViewer -Report $selectedReport
+        if ($viewerAction -eq 'Deleted') {
+            continue
+        }
+    }
+}
+
 function Invoke-DeleteSnapshot {
     $snapshot = Select-Snapshot -Prompt 'Διάλεξε snapshot για διαγραφή' -RootPath $SnapshotsRoot -Chronological
     if ($null -eq $snapshot) {
@@ -1860,7 +2354,8 @@ while ($true) {
         '4' { Invoke-CleanupFromSnapshots -AuditOnly }
         '5' { Invoke-CleanupFromSnapshots }
         '6' { Invoke-LiveDriverCheck }
-        '7' { Invoke-DeleteSnapshot }
+        '7' { Invoke-LiveCleanupReports }
+        '8' { Invoke-DeleteSnapshot }
         '0' { return }
         default {
             Write-Host 'Μη έγκυρη επιλογή.' -ForegroundColor Yellow

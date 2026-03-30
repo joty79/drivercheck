@@ -759,6 +759,26 @@ It strictly adheres to the user-defined formatting and documentation protocols.
 *   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`
 
 *   **Date:** 2026-03-30
+*   **Problem:** Persisted live cleanup transcripts existed on disk, but the launcher had no first-class way to re-read them with the same terminal feel or delete stale ones from inside the normal workflow.
+*   **Root Cause:** The `live\` folder was only storage; launcher UX covered snapshots and compare reports, but not saved live cleanup artifacts.
+*   **Guardrail:**
+    1. If live cleanup persists reports under repo-root `live\`, the main launcher should expose a first-class menu entry for browsing them.
+    2. Re-reading saved live cleanup reports should prefer terminal-style rendering over raw markdown preview when the goal is to recreate the original cleanup output feel.
+    3. Saved live cleanup artifacts should support guarded inline deletion from the same picker flow, with root-bound path verification under `live\`.
+*   **Files affected:** `DriverCheck.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `DriverCheck.ps1`; code-path review of live report picker/viewer/delete flow
+
+*   **Date:** 2026-03-30
+*   **Problem:** Confirmed live cleanup runs produced useful destructive-output transcripts in chat/manual copy, but the repo had no automatic persisted artifact for the exact `YES` path.
+*   **Root Cause:** `Invoke-DriverLiveCheck.ps1` showed the cleanup/post-check output only in the terminal and did not save the confirmed run to disk.
+*   **Guardrail:**
+    1. After the operator confirms live cleanup with exact `YES`, persist that cleanup/output block automatically under repo-root `live\`.
+    2. Live destructive-output artifacts should use stable human-readable names that include the primary driver token and timestamp.
+    3. Keep the persisted live report scoped to the confirmed cleanup section; do not require transcript capture for the entire interactive discovery flow.
+*   **Files affected:** `internal\Invoke-DriverLiveCheck.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Invoke-DriverLiveCheck.ps1`; non-admin code-path review of transcript start/stop flow
+
+*   **Date:** 2026-03-30
 *   **Problem:** Even after human-readable compare labels moved into the launcher UI, long compare-output folder names could still be annoying or even fail in Explorer/VM copy workflows because Windows path handling is still fragile in practice.
 *   **Root Cause:** Storage naming still carried too much semantic text, even though the actual human-facing selection logic already came from report metadata and not from folder names.
 *   **Guardrail:**

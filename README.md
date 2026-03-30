@@ -55,12 +55,14 @@ pwsh -ExecutionPolicy Bypass -File .\DriverCheck.ps1
 - `Audit Cleanup From Snapshots`
 - `Run Cleanup From Snapshots`
 - `Live Driver Check`
+- `Live Driver Clean Reports`
 - `Delete Snapshot`
 - `Compare Structured Reports`
 
 💡 Το launcher δέχεται πλέον `Up/Down`, `Enter`, `1..9` shortcuts και `ESC` ως σταθερό cancel/exit path, με πιο ήπιο in-place redraw ώστε να μειώνεται το terminal blink.
 💡 Το `Delete Snapshot` είναι intentionally guarded: πρώτα διαλέγεις snapshot από τον ίδιο picker, γίνεται path verification μέσα στο `snapshots` root, και μετά το confirm είναι απλό `ENTER = delete / ESC = cancel`.
 💡 Το `Compare Structured Reports` δείχνει πλέον human-readable labels από το source compare report, π.χ. `Multi / BeforeInstall with Multi-Fast / AfterInstall`, χρησιμοποιεί αυτόματα το `differences-only.txt` κάθε compare folder χωρίς δεύτερο file picker, και μετά δίνει in-terminal viewer για `extra-vs-base`, `missing-vs-base` ή και τα δύο μαζί.
+💡 Το `Live Driver Clean Reports` διαβάζει τα persisted `.md` transcripts από το `live\`, τα ξαναδείχνει in-terminal με terminal-style coloring αντί για markdown preview, και υποστηρίζει inline delete με `D` / `Delete`.
 
 <a id="drivercheck-workbench"></a>
 
@@ -144,9 +146,11 @@ Cleanup
    |-- pnputil /delete-driver /uninstall /force
    |-- Remove-Item <driver>.sys
    |-- post-cleanup recheck
+   |-- save confirmed cleanup transcript to .\live\<driver> live-cleanup <timestamp>.md
 ```
 
 Αυτό το flow είναι πιο ασφαλές από ένα "search and delete" pattern, γιατί χωρίζει το broad discovery από το exact-match deletion.
+Μετά από confirmed cleanup (`YES`), το script γράφει πλέον και persisted `.md` transcript κάτω από το `live\` folder στο repo root, ώστε να κρατάς το exact terminal output του destructive run για review ή sharing.
 
 ### Usage
 

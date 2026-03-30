@@ -8,6 +8,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ExitLiveDriverCheck = $false
+$script:LiveCleanupTranscriptPath = $null
+$script:LiveCleanupTranscriptStartedHere = $false
 
 function Test-CurrentSessionElevated {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -66,6 +68,90 @@ function Clear-HostSafe {
     catch {
         # Some hosts do not expose a normal console buffer.
     }
+}
+
+function Get-LiveArtifactsRoot {
+    return (Join-Path (Split-Path -Parent $PSScriptRoot) 'live')
+}
+
+function Convert-ToSafeReportToken {
+    param(
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'unknown-driver'
+    }
+
+    $safeValue = [string]$Value
+    $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+    foreach ($invalidChar in $invalidChars) {
+        $safeValue = $safeValue.Replace([string]$invalidChar, '-')
+    }
+
+    $safeValue = [regex]::Replace($safeValue, '\s+', '-')
+    $safeValue = [regex]::Replace($safeValue, '-{2,}', '-').Trim('-')
+
+    if ([string]::IsNullOrWhiteSpace($safeValue)) {
+        return 'unknown-driver'
+    }
+
+    return $safeValue.ToLowerInvariant()
+}
+
+function New-LiveCleanupReportPath {
+    param(
+        [AllowEmptyString()]
+        [string]$PrimaryExactDriver,
+        [switch]$Continuation
+    )
+
+    $liveRoot = Get-LiveArtifactsRoot
+    if (-not (Test-Path -LiteralPath $liveRoot)) {
+        New-Item -ItemType Directory -Path $liveRoot -Force | Out-Null
+    }
+
+    $driverToken = Convert-ToSafeReportToken -Value $PrimaryExactDriver
+    $reportKind = if ($Continuation) { 'live-continuation-cleanup' } else { 'live-cleanup' }
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH.mm.ss'
+
+    return (Join-Path $liveRoot ("{0} {1} {2}.md" -f $driverToken, $reportKind, $timestamp))
+}
+
+function Start-LiveCleanupTranscript {
+    param(
+        [AllowEmptyString()]
+        [string]$PrimaryExactDriver,
+        [switch]$Continuation
+    )
+
+    if ($script:LiveCleanupTranscriptStartedHere -and -not [string]::IsNullOrWhiteSpace($script:LiveCleanupTranscriptPath)) {
+        return $script:LiveCleanupTranscriptPath
+    }
+
+    $reportPath = New-LiveCleanupReportPath -PrimaryExactDriver $PrimaryExactDriver -Continuation:$Continuation
+    Start-Transcript -LiteralPath $reportPath -UseMinimalHeader | Out-Null
+    $script:LiveCleanupTranscriptPath = $reportPath
+    $script:LiveCleanupTranscriptStartedHere = $true
+    return $reportPath
+}
+
+function Stop-LiveCleanupTranscript {
+    if (-not $script:LiveCleanupTranscriptStartedHere) {
+        return $null
+    }
+
+    try {
+        Stop-Transcript | Out-Null
+    }
+    finally {
+        $reportPath = $script:LiveCleanupTranscriptPath
+        $script:LiveCleanupTranscriptPath = $null
+        $script:LiveCleanupTranscriptStartedHere = $false
+    }
+
+    return $reportPath
 }
 
 function Show-Header {
@@ -2663,88 +2749,111 @@ while ($true) {
     }
 
     if (Confirm-CleanupTargets -Targets $cleanupTargets -PrimaryExactDriver $exactDriver) {
-        $allCleanupTargetTokens = @($cleanupTargets | ForEach-Object { $_.ExactDriver } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-        $pendingCleanupTargets = @($cleanupTargets)
+        $reportPath = $null
+        $reportSaveFailed = $false
 
-        while ($pendingCleanupTargets.Count -gt 0) {
-            foreach ($cleanupEvidence in $pendingCleanupTargets) {
-                Remove-DriverEvidence -Evidence $cleanupEvidence
+        try {
+            try {
+                $reportPath = Start-LiveCleanupTranscript -PrimaryExactDriver $exactDriver
+            }
+            catch {
+                $reportSaveFailed = $true
+                Write-Host "`n$I_Warn Αποτυχία έναρξης live markdown report. Το cleanup θα συνεχίσει χωρίς persisted transcript." -ForegroundColor Yellow
+                Write-Host "    Reason: $($_.Exception.Message)" -ForegroundColor DarkYellow
             }
 
-            $postServiceRegistry = @(Get-ServiceRegistryInventory)
-            $postDriverPackages = @(Convert-PnpUtilToDriverPackages -Lines (Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/enum-drivers')).Output)
+            $allCleanupTargetTokens = @($cleanupTargets | ForEach-Object { $_.ExactDriver } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+            $pendingCleanupTargets = @($cleanupTargets)
 
-            Write-Host "`n==============================================="
-            Write-Host ' POST-CLEANUP CHECK' -ForegroundColor White
-            Write-Host '==============================================='
-            $remainingEvidenceFound = $false
-
-            foreach ($cleanupEvidence in $pendingCleanupTargets) {
-                $postEvidence = Get-DriverEvidence -ExactDriver $cleanupEvidence.ExactDriver -ServiceRegistry $postServiceRegistry -DriverPackages $postDriverPackages -SkipRelatedComponents
-                if (Test-EvidenceFound -Evidence $postEvidence) {
-                    $remainingEvidenceFound = $true
-                    Write-Host "$I_Warn Έμεινε exact evidence μετά το cleanup για: $($postEvidence.ExactDriver)" -ForegroundColor Yellow
-                    Show-DriverEvidence -Evidence $postEvidence
+            while ($pendingCleanupTargets.Count -gt 0) {
+                foreach ($cleanupEvidence in $pendingCleanupTargets) {
+                    Remove-DriverEvidence -Evidence $cleanupEvidence
                 }
-                else {
-                    Write-Host "$I_Ok Καθαρό exact live evidence για: $($postEvidence.ExactDriver)" -ForegroundColor Green
-                }
-            }
 
-            $remainingRelatedCandidates = @(
-                Get-RelatedCleanupCandidates -Evidence $evidence -ServiceRegistry $postServiceRegistry -DriverPackages $postDriverPackages |
-                Where-Object {
-                    $_.HasLiveEvidence -and $_.Token -notin $allCleanupTargetTokens
-                }
-            )
-            $remainingLinkedCandidates = @($remainingRelatedCandidates | Where-Object { $_.CanOfferCleanup })
-            $remainingReviewOnlyCandidates = @($remainingRelatedCandidates | Where-Object { -not $_.CanOfferCleanup })
+                $postServiceRegistry = @(Get-ServiceRegistryInventory)
+                $postDriverPackages = @(Convert-PnpUtilToDriverPackages -Lines (Invoke-NativeCapture -FilePath 'pnputil.exe' -Arguments @('/enum-drivers')).Output)
 
-            if ($remainingEvidenceFound) {
+                Write-Host "`n==============================================="
+                Write-Host ' POST-CLEANUP CHECK' -ForegroundColor White
+                Write-Host '==============================================='
+                $remainingEvidenceFound = $false
+
+                foreach ($cleanupEvidence in $pendingCleanupTargets) {
+                    $postEvidence = Get-DriverEvidence -ExactDriver $cleanupEvidence.ExactDriver -ServiceRegistry $postServiceRegistry -DriverPackages $postDriverPackages -SkipRelatedComponents
+                    if (Test-EvidenceFound -Evidence $postEvidence) {
+                        $remainingEvidenceFound = $true
+                        Write-Host "$I_Warn Έμεινε exact evidence μετά το cleanup για: $($postEvidence.ExactDriver)" -ForegroundColor Yellow
+                        Show-DriverEvidence -Evidence $postEvidence
+                    }
+                    else {
+                        Write-Host "$I_Ok Καθαρό exact live evidence για: $($postEvidence.ExactDriver)" -ForegroundColor Green
+                    }
+                }
+
+                $remainingRelatedCandidates = @(
+                    Get-RelatedCleanupCandidates -Evidence $evidence -ServiceRegistry $postServiceRegistry -DriverPackages $postDriverPackages |
+                    Where-Object {
+                        $_.HasLiveEvidence -and $_.Token -notin $allCleanupTargetTokens
+                    }
+                )
+                $remainingLinkedCandidates = @($remainingRelatedCandidates | Where-Object { $_.CanOfferCleanup })
+                $remainingReviewOnlyCandidates = @($remainingRelatedCandidates | Where-Object { -not $_.CanOfferCleanup })
+
+                if ($remainingEvidenceFound) {
+                    if ($remainingLinkedCandidates.Count -gt 0) {
+                        Show-RemainingLinkedTargetsSummary -RemainingCandidates $remainingLinkedCandidates
+                    }
+                    if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                        Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                    }
+                    break
+                }
+
                 if ($remainingLinkedCandidates.Count -gt 0) {
+                    Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence για τα cleanup targets." -ForegroundColor Green
                     Show-RemainingLinkedTargetsSummary -RemainingCandidates $remainingLinkedCandidates
-                }
-                if ($remainingReviewOnlyCandidates.Count -gt 0) {
-                    Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
-                }
-                break
-            }
+                    if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                        Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                    }
 
-            if ($remainingLinkedCandidates.Count -gt 0) {
-                Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence για τα cleanup targets." -ForegroundColor Green
-                Show-RemainingLinkedTargetsSummary -RemainingCandidates $remainingLinkedCandidates
-                if ($remainingReviewOnlyCandidates.Count -gt 0) {
-                    Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                    $continuationTargets = @(Resolve-RemainingCleanupTargets -RemainingCandidates $remainingLinkedCandidates)
+                    if ($continuationTargets.Count -eq 0) {
+                        break
+                    }
+
+                    if (-not (Confirm-CleanupTargets -Targets $continuationTargets -PrimaryExactDriver $exactDriver -Continuation)) {
+                        break
+                    }
+
+                    $pendingCleanupTargets = @($continuationTargets)
+                    $allCleanupTargetTokens = @(
+                        $allCleanupTargetTokens +
+                        @($pendingCleanupTargets | ForEach-Object { $_.ExactDriver } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    ) | Sort-Object -Unique
+                    continue
                 }
 
-                $continuationTargets = @(Resolve-RemainingCleanupTargets -RemainingCandidates $remainingLinkedCandidates)
-                if ($continuationTargets.Count -eq 0) {
+                if ($remainingReviewOnlyCandidates.Count -gt 0) {
+                    Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο cleanup-eligible live evidence μετά το cleanup." -ForegroundColor Green
+                    Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
                     break
                 }
 
-                if (-not (Confirm-CleanupTargets -Targets $continuationTargets -PrimaryExactDriver $exactDriver -Continuation)) {
-                    break
-                }
-
-                $pendingCleanupTargets = @($continuationTargets)
-                $allCleanupTargetTokens = @(
-                    $allCleanupTargetTokens +
-                    @($pendingCleanupTargets | ForEach-Object { $_.ExactDriver } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-                ) | Sort-Object -Unique
-                continue
-            }
-
-            if ($remainingReviewOnlyCandidates.Count -gt 0) {
-                Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο cleanup-eligible live evidence μετά το cleanup." -ForegroundColor Green
-                Show-ReviewOnlyRemainingLinkedTargetsSummary -ReviewOnlyCandidates $remainingReviewOnlyCandidates
+                Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence μετά το cleanup." -ForegroundColor Green
                 break
             }
 
-            Write-Host "`n$I_Ok Δεν βρέθηκε υπόλοιπο exact live evidence μετά το cleanup." -ForegroundColor Green
-            break
+            Write-Host "`n$I_Ok Η διαδικασία ολοκληρώθηκε! Συνιστάται επανεκκίνηση αν θέλεις extra verification ή πριν από reinstall / troubleshooting." -ForegroundColor Green
         }
-
-                Write-Host "`n$I_Ok Η διαδικασία ολοκληρώθηκε! Συνιστάται επανεκκίνηση αν θέλεις extra verification ή πριν από reinstall / troubleshooting." -ForegroundColor Green
+        finally {
+            $savedReportPath = Stop-LiveCleanupTranscript
+            if (-not [string]::IsNullOrWhiteSpace($savedReportPath)) {
+                Write-Host "$I_Path Live cleanup report: $savedReportPath" -ForegroundColor Cyan
+            }
+            elseif ($reportSaveFailed) {
+                Write-Host "$I_Warn Δεν γράφτηκε live cleanup report σε md file για αυτό το run." -ForegroundColor Yellow
+            }
+        }
     }
     else {
         Write-Host "`n$I_Warn Δεν δόθηκε η λέξη 'YES'. Ακύρωση διαγραφής." -ForegroundColor Yellow
