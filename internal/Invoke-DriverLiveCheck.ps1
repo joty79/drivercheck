@@ -764,6 +764,25 @@ function Convert-RegistryValueDataToString {
     return [string]$ValueData
 }
 
+function Convert-RegistryKeyPathToProviderPath {
+    param(
+        [string]$KeyPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($KeyPath)) {
+        return ''
+    }
+
+    switch -Regex ($KeyPath) {
+        '^HKEY_LOCAL_MACHINE\\' { return ('HKLM:\' + $KeyPath.Substring('HKEY_LOCAL_MACHINE\'.Length)) }
+        '^HKEY_CURRENT_USER\\' { return ('HKCU:\' + $KeyPath.Substring('HKEY_CURRENT_USER\'.Length)) }
+        '^HKEY_CLASSES_ROOT\\' { return ('HKCR:\' + $KeyPath.Substring('HKEY_CLASSES_ROOT\'.Length)) }
+        '^HKEY_USERS\\' { return ('HKU:\' + $KeyPath.Substring('HKEY_USERS\'.Length)) }
+        '^HKEY_CURRENT_CONFIG\\' { return ('HKCC:\' + $KeyPath.Substring('HKEY_CURRENT_CONFIG\'.Length)) }
+        default { return '' }
+    }
+}
+
 function Get-DriverQueryEntriesSafe {
     param(
         [string]$ExactDriver
@@ -958,6 +977,83 @@ function Get-FocusedRegistryEvidence {
         Keys = @($keyHits.ToArray() | Sort-Object KeyPath)
         Values = @($valueHits.ToArray() | Sort-Object KeyPath, ValueName)
     }
+}
+
+function Get-SafeFocusedRegistryCleanupCandidates {
+    param(
+        [object]$Evidence
+    )
+
+    $registryValues = @($Evidence.FocusedRegistry.Values)
+    if ($registryValues.Count -eq 0) {
+        return @()
+    }
+
+    $safeMatchingDeviceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $safeInfSections = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    [void]$safeMatchingDeviceIds.Add(("root\{0}" -f $Evidence.ExactDriver))
+    [void]$safeInfSections.Add(("{0}_Device" -f $Evidence.ExactDriver))
+
+    foreach ($device in @($Evidence.PnpDevices)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$device.MatchingDeviceId)) {
+            [void]$safeMatchingDeviceIds.Add([string]$device.MatchingDeviceId)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$device.DriverInfSection)) {
+            [void]$safeInfSections.Add([string]$device.DriverInfSection)
+        }
+    }
+
+    $candidateGroups = @{}
+    foreach ($registryValue in $registryValues) {
+        $keyPath = [string]$registryValue.KeyPath
+        $valueName = [string]$registryValue.ValueName
+        $valueData = [string]$registryValue.ValueData
+
+        if ($keyPath -notmatch '^HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\\{[^\\]+\}\\\d{4}$') {
+            continue
+        }
+
+        $isSafeCandidate = $false
+        switch -Regex ($valueName) {
+            '^(?i:MatchingDeviceId)$' {
+                $isSafeCandidate = $safeMatchingDeviceIds.Contains($valueData)
+                break
+            }
+            '^(?i:InfSection)$' {
+                $isSafeCandidate = $safeInfSections.Contains($valueData)
+                break
+            }
+        }
+
+        if (-not $isSafeCandidate) {
+            continue
+        }
+
+        if (-not $candidateGroups.ContainsKey($keyPath)) {
+            $candidateGroups[$keyPath] = [System.Collections.Generic.List[object]]::new()
+        }
+
+        [void]$candidateGroups[$keyPath].Add($registryValue)
+    }
+
+    $cleanupCandidates = New-Object System.Collections.Generic.List[object]
+    foreach ($keyPath in @($candidateGroups.Keys | Sort-Object)) {
+        $groupItems = @($candidateGroups[$keyPath])
+        $hasMatchingDeviceId = @($groupItems | Where-Object { [string]$_.ValueName -match '^(?i:MatchingDeviceId)$' }).Count -gt 0
+        $hasInfSection = @($groupItems | Where-Object { [string]$_.ValueName -match '^(?i:InfSection)$' }).Count -gt 0
+
+        if (-not ($hasMatchingDeviceId -and $hasInfSection)) {
+            continue
+        }
+
+        foreach ($groupItem in $groupItems) {
+            [void]$cleanupCandidates.Add($groupItem)
+        }
+    }
+
+    return @($cleanupCandidates.ToArray() | Sort-Object KeyPath, ValueName)
 }
 
 function Get-RuntimeServicesByNameSafe {
@@ -2626,6 +2722,24 @@ function Remove-DriverEvidence {
         }
         catch {
             Write-Host "$I_Warn Ήταν αδύνατη η διαγραφή του φυσικού αρχείου." -ForegroundColor Yellow
+            Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+
+    $safeRegistryCleanupCandidates = @(Get-SafeFocusedRegistryCleanupCandidates -Evidence $Evidence)
+    foreach ($registryValue in $safeRegistryCleanupCandidates) {
+        $providerPath = Convert-RegistryKeyPathToProviderPath -KeyPath $registryValue.KeyPath
+        if ([string]::IsNullOrWhiteSpace($providerPath) -or -not (Test-Path -LiteralPath $providerPath)) {
+            continue
+        }
+
+        Write-Host "`n$I_Item Καθαρισμός safe focused registry value: $($registryValue.KeyPath) :: [$($registryValue.ValueName)]"
+        try {
+            Remove-ItemProperty -LiteralPath $providerPath -Name $registryValue.ValueName -Force -ErrorAction Stop
+            Write-Host "$I_Ok Το focused registry value αφαιρέθηκε." -ForegroundColor Green
+        }
+        catch {
+            Write-Host "$I_Warn Δεν ήταν δυνατή η αφαίρεση του focused registry value." -ForegroundColor Yellow
             Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkYellow
         }
     }

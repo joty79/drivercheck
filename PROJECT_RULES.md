@@ -759,6 +759,16 @@ It strictly adheres to the user-defined formatting and documentation protocols.
 *   **Validation/tests run:** Parser validation of `internal\Save-DriverSnapshot.ps1`
 
 *   **Date:** 2026-03-30
+*   **Problem:** Live cleanup could correctly remove service/package/device/file evidence yet still leave behind narrow `Control\Class` residues such as paired `InfSection` / `MatchingDeviceId` values for the same driver.
+*   **Root Cause:** `Invoke-DriverLiveCheck.ps1` treated `Focused Registry Evidence` as display-only and had no narrow cleanup path for safe paired class-binding leftovers.
+*   **Guardrail:**
+    1. Live cleanup may remove focused registry values under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{GUID}\####` only when the same key has both a safe `MatchingDeviceId` and a safe `InfSection` that match the current driver story.
+    2. Do not turn live focused-registry cleanup into a broad key-delete path; remove only the explicitly matched value names.
+    3. `CurrentControlSet` remains the live source of truth for this path; do not duplicate cleanup by independently traversing every `ControlSet00x` mirror.
+*   **Files affected:** `internal\Invoke-DriverLiveCheck.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`
+*   **Validation/tests run:** Parser validation of `internal\Invoke-DriverLiveCheck.ps1`; code-path review of paired `Control\Class` value cleanup
+
+*   **Date:** 2026-03-30
 *   **Problem:** Persisted live cleanup transcripts existed on disk, but the launcher had no first-class way to re-read them with the same terminal feel or delete stale ones from inside the normal workflow.
 *   **Root Cause:** The `live\` folder was only storage; launcher UX covered snapshots and compare reports, but not saved live cleanup artifacts.
 *   **Guardrail:**

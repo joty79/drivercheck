@@ -8,11 +8,13 @@
 
 - Το `Invoke-DriverLiveCheck.ps1` αποθηκεύει πλέον το confirmed cleanup output σε persisted `.md` transcript κάτω από νέο `live\` folder στο repo root, με filename που περιλαμβάνει το primary driver token και timestamp, ώστε κάθε `YES` destructive run να αφήνει άμεσα shareable artifact.
 - Το `DriverCheck.ps1` απέκτησε νέο launcher submenu `Live Driver Clean Reports` κάτω από το `Live Driver Check`, με ίδιο header/visual style, picker για τα `live\*.md` cleanup transcripts, terminal-style re-read viewer και guarded delete path για τα saved reports.
+- Το `Invoke-DriverLiveCheck.ps1` καθαρίζει πλέον και narrow safe `Focused Registry` leftovers για paired `Control\Class` values (`InfSection` + `MatchingDeviceId`) όταν ταιριάζουν ακριβώς με το current driver story, ώστε residues όπως `mcamvusb7_Device` / `root\mcamvusb7` να μη μένουν πίσω μετά από otherwise-successful live cleanup.
 
 ### Documented
 
 - Το `README.md` ενημερώθηκε ώστε το live cleanup flow να αναφέρει ρητά το νέο persisted markdown transcript κάτω από `live\`.
 - Το `README.md` ενημερώθηκε ώστε το launcher section να περιγράφει και το νέο `Live Driver Clean Reports` viewer/delete flow.
+- Το `README.md` ενημερώθηκε ώστε το live tool behavior notes να εξηγούν και το νέο narrow safe `Control\Class` registry cleanup path.
 
 ## 2026-03-28
 
